@@ -17,11 +17,13 @@ import (
 
 type settingsContextKey struct{}
 type projectContextKey struct{}
+type jsonOutputContextKey struct{}
 
 // NewRootCommand creates the root goralph command.
 func NewRootCommand() *cobra.Command {
 	var cfgFile string
 	var dbPath string
+	var jsonOutput bool
 
 	cmd := &cobra.Command{
 		Use:   "goralph",
@@ -33,6 +35,7 @@ func NewRootCommand() *cobra.Command {
 			}
 
 			ctx := context.WithValue(cmd.Context(), settingsContextKey{}, settings)
+			ctx = context.WithValue(ctx, jsonOutputContextKey{}, jsonOutput)
 			cmd.SetContext(ctx)
 			if isDBCommand(cmd) {
 				return nil
@@ -52,7 +55,9 @@ func NewRootCommand() *cobra.Command {
 
 	cmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file path")
 	cmd.PersistentFlags().StringVar(&dbPath, "db", "", "SQLite database path")
+	cmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "emit JSON output")
 	cmd.AddCommand(newDBCommand())
+	cmd.AddCommand(newProjectCommand())
 
 	return cmd
 }

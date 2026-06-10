@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,6 +119,90 @@ func TestRootCommandAutoCreatesCurrentProject(t *testing.T) {
 		t.Fatalf("execute root command: %v", err)
 	}
 	assertProject(t, dbPath, repoRoot, "sample-repo")
+}
+
+func TestProjectInfoPrintsCurrentProject(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	stdout := &bytes.Buffer{}
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "project", "info"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute project info: %v", err)
+	}
+	output := stdout.String()
+	for _, want := range []string{"Project", "Name: sample-repo", "Root: " + repoRoot} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("project info output = %q, want %q", output, want)
+		}
+	}
+}
+
+func TestProjectInfoPrintsJSON(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	stdout := &bytes.Buffer{}
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "project", "info"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute project info --json: %v", err)
+	}
+	var got projectOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode project JSON %q: %v", stdout.String(), err)
+	}
+	if got.Name != "sample-repo" || got.RootPath != repoRoot || got.Description != "" {
+		t.Fatalf("project JSON = %+v, want sample-repo at %s", got, repoRoot)
+	}
+}
+
+func TestProjectInitUpdatesAutoCreatedProject(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	stdout := &bytes.Buffer{}
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "project", "init", "--name", "Custom", "--description", "Demo project"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute project init: %v", err)
+	}
+	var got projectOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode project JSON %q: %v", stdout.String(), err)
+	}
+	if got.Name != "Custom" || got.Description != "Demo project" || got.RootPath != repoRoot {
+		t.Fatalf("project init JSON = %+v, want updated project", got)
+	}
+	assertProjectDetails(t, dbPath, repoRoot, "Custom", "Demo project", 1)
 }
 
 func TestRootCommandErrorsWithoutGitRoot(t *testing.T) {
@@ -248,6 +333,20 @@ func TestDBResetForceRecreatesMigratedDatabase(t *testing.T) {
 	assertTableMissing(t, dbPath, "stale")
 }
 
+func createTestGitWorkDir(t *testing.T, repoName string) (string, string) {
+	t.Helper()
+
+	repoRoot := filepath.Join(t.TempDir(), repoName)
+	workDir := filepath.Join(repoRoot, "nested", "pkg")
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("create git root: %v", err)
+	}
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("create work dir: %v", err)
+	}
+	return repoRoot, workDir
+}
+
 func chdir(t *testing.T, dir string) {
 	t.Helper()
 
@@ -280,6 +379,33 @@ func assertProject(t *testing.T, dbPath string, rootPath string, name string) {
 	}
 	if gotName != name {
 		t.Fatalf("project name = %q, want %q", gotName, name)
+	}
+}
+
+func assertProjectDetails(t *testing.T, dbPath string, rootPath string, name string, description string, wantCount int) {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	var gotName string
+	var gotDescription string
+	if err := database.QueryRow("SELECT name, description FROM project WHERE root_path = ?", rootPath).Scan(&gotName, &gotDescription); err != nil {
+		t.Fatalf("query project: %v", err)
+	}
+	if gotName != name || gotDescription != description {
+		t.Fatalf("project = (%q, %q), want (%q, %q)", gotName, gotDescription, name, description)
+	}
+
+	var gotCount int
+	if err := database.QueryRow("SELECT COUNT(*) FROM project WHERE root_path = ?", rootPath).Scan(&gotCount); err != nil {
+		t.Fatalf("count projects: %v", err)
+	}
+	if gotCount != wantCount {
+		t.Fatalf("project count = %d, want %d", gotCount, wantCount)
 	}
 }
 

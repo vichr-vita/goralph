@@ -114,7 +114,7 @@
       "Ensure project init updates the auto-created project row when present",
       "Support human output by default and JSON output with --json"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

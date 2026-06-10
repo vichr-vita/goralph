@@ -64,3 +64,30 @@ func (q *Queries) Ping(ctx context.Context) (int64, error) {
 	err := row.Scan(&column_1)
 	return column_1, err
 }
+
+const updateProject = `-- name: UpdateProject :one
+UPDATE project
+SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, name, root_path, description, created_at, updated_at
+`
+
+type UpdateProjectParams struct {
+	Name        string
+	Description string
+	ID          int64
+}
+
+func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (Project, error) {
+	row := q.db.QueryRowContext(ctx, updateProject, arg.Name, arg.Description, arg.ID)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.RootPath,
+		&i.Description,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
