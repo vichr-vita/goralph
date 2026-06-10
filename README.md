@@ -9,14 +9,14 @@
 
 ## Install or build
 
-Install version `v0.1.1` from GitHub:
+Install version `v0.1.2` from GitHub:
 
 ```sh
-go install github.com/vichr-vita/goralph@v0.1.1
+go install github.com/vichr-vita/goralph@v0.1.2
 goralph --help
 ```
 
-Remote `go install` needs a version suffix such as `@v0.1.1`.
+Remote `go install` needs a version suffix such as `@v0.1.2`.
 
 If `goralph` is not found, add your Go binary directory to `PATH`.
 
@@ -34,10 +34,10 @@ echo 'export PATH="$(go env GOPATH)/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-Update installed binary to `v0.1.1`:
+Update installed binary to `v0.1.2`:
 
 ```sh
-go install github.com/vichr-vita/goralph@v0.1.1
+go install github.com/vichr-vita/goralph@v0.1.2
 ```
 
 Uninstall:
@@ -64,8 +64,8 @@ goralph --help
 GitHub Actions builds release binaries when a `v*` tag is pushed. Create a new release:
 
 ```sh
-git tag -a v0.1.2 -m "v0.1.2"
-git push origin v0.1.2
+git tag -a v0.1.3 -m "v0.1.3"
+git push origin v0.1.3
 ```
 
 The default runner command is `pi -p <generated-prompt>`. Use `--config`, user config, or project config when you need a different runner.

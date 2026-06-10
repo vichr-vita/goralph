@@ -1640,7 +1640,8 @@ func TestRunOneRecoversStaleSameHostDeadPIDWithForce(t *testing.T) {
 	}
 	tasks := fetchImportedTasks(t, dbPath, repoRoot)
 	host, _ := os.Hostname()
-	staleRunID := seedActiveRunWithMetadata(t, dbPath, repoRoot, tasks[0].id, 999999, host, time.Now().UTC().Format(time.RFC3339))
+	deadPID := deadPIDForTest(t)
+	staleRunID := seedActiveRunWithMetadata(t, dbPath, repoRoot, tasks[0].id, deadPID, host, time.Now().UTC().Format(time.RFC3339))
 	runnerScript := "#!/bin/sh\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
@@ -1652,7 +1653,7 @@ func TestRunOneRecoversStaleSameHostDeadPIDWithForce(t *testing.T) {
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "stale active run requires --force") || !strings.Contains(err.Error(), "pid 999999") {
+	if err == nil || !strings.Contains(err.Error(), "stale active run requires --force") || !strings.Contains(err.Error(), "pid "+strconv.FormatInt(deadPID, 10)) {
 		t.Fatalf("run one stale dead pid error = %v, want force-required dead-pid error", err)
 	}
 	assertRunCount(t, dbPath, 1)
@@ -1683,6 +1684,17 @@ func TestRunOneRecoversStaleSameHostDeadPIDWithForce(t *testing.T) {
 	if staleStatus != "failed" || !staleExitError.Valid || !strings.Contains(staleExitError.String, "stale active run recovered with --force") {
 		t.Fatalf("stale run status=%q exit_error=%v, want failed recovery note", staleStatus, staleExitError)
 	}
+}
+
+func deadPIDForTest(t *testing.T) int64 {
+	t.Helper()
+	for _, pid := range []int{999999, 42424242, 2147483647} {
+		if !pidAlive(pid) {
+			return int64(pid)
+		}
+	}
+	t.Fatal("could not find a dead PID candidate")
+	return 0
 }
 
 func TestRunOneRequiresForceForCrossHostStaleHeartbeat(t *testing.T) {
