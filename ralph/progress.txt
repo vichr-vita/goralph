@@ -32,3 +32,4 @@ Implemented run one --task targeting with current-project validation and forced-
 2026-06-10: Implemented project feedback commands: list/set/run CLI, sqlc queries, prompt integration, tests, smoke.
 2026-06-10: implemented v1 feedback prompt guidance; automated runs do not enforce feedback after agent exit; go test ./... passed.
 2026-06-10 cli json output: added global --json coverage across db/prd/run/feedback; JSON stdout stays machine-only.
+2026-06-10: Implemented named command outcomes with internal exit-code mapping and JSON outcome names.

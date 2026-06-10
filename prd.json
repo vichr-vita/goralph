@@ -493,7 +493,7 @@
       "Use outcome names in JSON output",
       "Use consistent outcomes across all commands"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "testing",

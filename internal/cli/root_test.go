@@ -30,6 +30,34 @@ func TestSafeCommandLineRedactsSensitiveValues(t *testing.T) {
 	}
 }
 
+func TestCommandOutcomesHaveStableExitCodes(t *testing.T) {
+	cases := []struct {
+		outcome Outcome
+		code    int
+	}{
+		{OutcomeSuccess, 0},
+		{OutcomeGenericError, 1},
+		{OutcomeValidationError, 2},
+		{OutcomeNoEligibleTasks, 3},
+		{OutcomeDirtyGit, 4},
+		{OutcomeActiveRunExists, 5},
+		{OutcomeRunnerFailed, 6},
+		{OutcomeFeedbackFailed, 7},
+		{OutcomeTaskBlockedOrFailedStop, 8},
+	}
+	for _, tc := range cases {
+		if got := ExitCodeForOutcome(tc.outcome); got != tc.code {
+			t.Fatalf("ExitCodeForOutcome(%q) = %d, want %d", tc.outcome, got, tc.code)
+		}
+	}
+	if got := OutcomeForError(outcomeErrorf(OutcomeFeedbackFailed, "boom")); got != OutcomeFeedbackFailed {
+		t.Fatalf("OutcomeForError(feedback) = %q, want %q", got, OutcomeFeedbackFailed)
+	}
+	if got := OutcomeForError(errors.New("unknown flag: --bad")); got != OutcomeValidationError {
+		t.Fatalf("OutcomeForError(cobra validation) = %q, want %q", got, OutcomeValidationError)
+	}
+}
+
 func TestValidateTaskStatusRejectsUnknown(t *testing.T) {
 	for _, status := range []string{"pending", "in_progress", "blocked", "passed", "failed"} {
 		t.Run(status, func(t *testing.T) {

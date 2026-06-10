@@ -8,8 +8,13 @@ import (
 )
 
 func main() {
-	if err := cli.NewRootCommand().Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	cmd := cli.NewRootCommand()
+	if err := cmd.Execute(); err != nil {
+		if cli.CommandWantsJSON(cmd) {
+			_ = cli.WriteErrorJSON(os.Stdout, err)
+		} else {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		os.Exit(cli.ExitCodeForError(err))
 	}
 }

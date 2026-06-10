@@ -26,8 +26,10 @@ func NewRootCommand() *cobra.Command {
 	var jsonOutput bool
 
 	cmd := &cobra.Command{
-		Use:   "goralph",
-		Short: "Run Ralph loops for Go projects",
+		Use:           "goralph",
+		Short:         "Run Ralph loops for Go projects",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			settings, err := config.Load(cfgFile, dbPath)
 			if err != nil {

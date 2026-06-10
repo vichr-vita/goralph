@@ -96,17 +96,17 @@ func newRunOneCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 			var forcedTaskID *int64
 			if cmd.Flags().Changed("task") {
 				if taskID <= 0 {
-					return fmt.Errorf("invalid task id %q", strconv.FormatInt(taskID, 10))
+					return outcomeErrorf(OutcomeValidationError, "invalid task id %q", strconv.FormatInt(taskID, 10))
 				}
 				forcedTaskID = &taskID
 			}
 
 			run, ran, _, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, forcedTaskID, false, !*allowDirty, activePolicy, runnerStdout, cmd.ErrOrStderr())
 			if !ran {
-				return writeRunMessage(cmd, "no_eligible", "No eligible task", 0)
+				return writeRunMessage(cmd, string(OutcomeNoEligibleTasks), "No eligible task", 0)
 			}
 			if err != nil {
-				return err
+				return runFailureOutcome(err)
 			}
 			return writeRun(cmd, run)
 		},
@@ -126,10 +126,10 @@ func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 		Long:  "Run eligible task turns until none remain. Task overrides are not supported; use `goralph run one --task <id>` to target a specific task.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Flags().Changed("task") {
-				return fmt.Errorf("--task is only supported for `goralph run one`; run all selects eligible tasks automatically")
+				return outcomeErrorf(OutcomeValidationError, "--task is only supported for `goralph run one`; run all selects eligible tasks automatically")
 			}
 			if maxTurns < 0 {
-				return fmt.Errorf("invalid max turns %d", maxTurns)
+				return outcomeErrorf(OutcomeValidationError, "invalid max turns %d", maxTurns)
 			}
 			project, err := projectFromContext(cmd.Context())
 			if err != nil {
@@ -158,10 +158,10 @@ func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 				case runAllStopAllPassed:
 					return writeRunMessage(cmd, "all_passed", "All tasks passed", runs)
 				case runAllStopBlockedOrFailed:
-					return fmt.Errorf("blocked or failed tasks remain: %s", strings.Join(stop.descriptions, ", "))
+					return outcomeErrorf(OutcomeTaskBlockedOrFailedStop, "blocked or failed tasks remain: %s", strings.Join(stop.descriptions, ", "))
 				case runAllStopNoEligible:
 					if runs == 0 {
-						return writeRunMessage(cmd, "no_eligible", "No eligible task", runs)
+						return writeRunMessage(cmd, string(OutcomeNoEligibleTasks), "No eligible task", runs)
 					}
 					return nil
 				}
@@ -175,13 +175,13 @@ func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 				run, ran, complete, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, nil, continueOnBlocked, !*allowDirty, activePolicy, runnerStdout, cmd.ErrOrStderr())
 				if !ran {
 					if runs == 0 {
-						return writeRunMessage(cmd, "no_eligible", "No eligible task", runs)
+						return writeRunMessage(cmd, string(OutcomeNoEligibleTasks), "No eligible task", runs)
 					}
 					return nil
 				}
 				runs++
 				if err != nil {
-					return err
+					return runFailureOutcome(err)
 				}
 				if err := writeRun(cmd, run); err != nil {
 					return err
@@ -228,6 +228,13 @@ type staleRunRequiresForceError struct {
 
 func (e *staleRunRequiresForceError) Error() string {
 	return fmt.Sprintf("stale active run requires --force before starting: %s; reason: %s; inspect with `goralph run show %d`", activeRunSummary(e.run), e.reason, e.run.ID)
+}
+
+func runFailureOutcome(err error) error {
+	if errors.Is(err, gitrepo.ErrDirtyWorktree) {
+		return err
+	}
+	return withOutcome(OutcomeRunnerFailed, err)
 }
 
 func activeRunSummary(run runOutput) string {
@@ -1083,7 +1090,11 @@ func writeRun(cmd *cobra.Command, run runOutput) error {
 
 func writeRunMessage(cmd *cobra.Command, status string, message string, runs int) error {
 	if jsonOutputFromContext(cmd.Context()) {
-		return writeJSON(cmd, messageOutput{OK: true, Status: status, Message: message, Runs: runs})
+		outcome := Outcome(status)
+		if _, ok := outcomeExitCodes[outcome]; !ok {
+			outcome = OutcomeSuccess
+		}
+		return writeJSON(cmd, messageOutput{OK: true, Outcome: outcome, Status: status, Message: message, Runs: runs})
 	}
 	_, err := fmt.Fprintln(cmd.OutOrStdout(), message)
 	return err

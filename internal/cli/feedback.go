@@ -115,7 +115,7 @@ func newFeedbackRunCommand() *cobra.Command {
 			if len(args) == 1 {
 				name := strings.TrimSpace(args[0])
 				if name == "" {
-					return errors.New("feedback name cannot be empty")
+					return outcomeErrorf(OutcomeValidationError, "feedback name cannot be empty")
 				}
 				feedback, err := getFeedbackCommand(cmd.Context(), settings.DBPath, project.ID, name)
 				if err != nil {
@@ -138,7 +138,7 @@ func newFeedbackRunCommand() *cobra.Command {
 
 			results, err := runFeedbackCommands(cmd.Context(), project.RootPath, commands, jsonModeWriter(cmd, cmd.OutOrStdout()), cmd.ErrOrStderr())
 			if err != nil {
-				return err
+				return withOutcome(OutcomeFeedbackFailed, err)
 			}
 			if jsonOutputFromContext(cmd.Context()) {
 				return writeJSON(cmd, results)
