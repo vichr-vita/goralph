@@ -48,6 +48,56 @@ func TestMigrateFreshDatabaseRecordsGooseVersion(t *testing.T) {
 	}
 }
 
+func TestMigrateFreshDatabaseEnforcesTaskStatusEnum(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "ralph.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	if err := Migrate(context.Background(), database); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	result, err := database.Exec("INSERT INTO project (name, root_path) VALUES (?, ?)", "test", t.TempDir())
+	if err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	projectID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("project id: %v", err)
+	}
+
+	for _, status := range []string{"pending", "in_progress", "blocked", "passed", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			_, err := database.Exec(
+				"INSERT INTO task (project_id, category, description, status) VALUES (?, ?, ?, ?)",
+				projectID,
+				"database",
+				"task "+status,
+				status,
+			)
+			if err != nil {
+				t.Fatalf("insert task with status %q: %v", status, err)
+			}
+		})
+	}
+
+	for _, status := range []string{"unknown", "completed", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			_, err := database.Exec(
+				"INSERT INTO task (project_id, category, description, status) VALUES (?, ?, ?, ?)",
+				projectID,
+				"database",
+				"task "+status,
+				status,
+			)
+			if err == nil {
+				t.Fatalf("insert task with status %q succeeded, want constraint error", status)
+			}
+		})
+	}
+}
+
 func TestMigrateFreshDatabaseCreatesNormalizedTables(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "ralph.db"))
 	if err != nil {

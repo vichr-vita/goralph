@@ -11,6 +11,24 @@ import (
 	"github.com/spf13/viper"
 )
 
+func TestValidateTaskStatusRejectsUnknown(t *testing.T) {
+	for _, status := range []string{"pending", "in_progress", "blocked", "passed", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			if err := validateTaskStatus(status); err != nil {
+				t.Fatalf("validateTaskStatus(%q): %v", status, err)
+			}
+		})
+	}
+
+	for _, status := range []string{"", "unknown", "completed", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			if err := validateTaskStatus(status); err == nil {
+				t.Fatalf("validateTaskStatus(%q) succeeded, want error", status)
+			}
+		})
+	}
+}
+
 func TestRootCommandExecutesWithoutConfig(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)

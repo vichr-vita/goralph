@@ -91,7 +91,7 @@
       "Map passed status to PRD passes=true on export",
       "Map all other statuses to PRD passes=false on export"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

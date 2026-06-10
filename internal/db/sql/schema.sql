@@ -13,7 +13,7 @@ CREATE TABLE task (
     category TEXT NOT NULL,
     description TEXT NOT NULL,
     status TEXT NOT NULL CHECK (
-        status IN ('pending', 'in_progress', 'completed', 'failed', 'cancelled')
+        status IN ('pending', 'in_progress', 'blocked', 'passed', 'failed')
     ),
     progress_report TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
