@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -68,12 +70,22 @@ func (r *Runner) Run(ctx context.Context, req runner.Request) (runner.Result, er
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
+	stdoutW := req.Stdout
+	if stdoutW == nil {
+		stdoutW = os.Stdout
+	}
+	stderrW := req.Stderr
+	if stderrW == nil {
+		stderrW = os.Stderr
+	}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	if !req.Quiet {
+		cmd.Stdout = io.MultiWriter(stdoutW, &stdout)
+		cmd.Stderr = io.MultiWriter(stderrW, &stderr)
+	}
 	if req.Interactive {
 		cmd.Stdin = os.Stdin
-		cmd.Stdout = io.MultiWriter(os.Stdout, &stdout)
-		cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	}
 
 	metadata := runner.Metadata{
@@ -95,6 +107,7 @@ func (r *Runner) Run(ctx context.Context, req runner.Request) (runner.Result, er
 	err := cmd.Wait()
 	metadata.FinishedAt = time.Now()
 	metadata.ExitCode, metadata.ExitSignal = exitOutcome(cmd.ProcessState)
+	metadata.SessionID, metadata.SessionPath = discoverSessionMetadata(startedAt, args, req)
 	result := runner.Result{Metadata: metadata, Stdout: stdout.String(), Stderr: stderr.String()}
 	if err != nil {
 		metadata.ExitError = err.Error()
@@ -143,6 +156,133 @@ func exitOutcome(state *os.ProcessState) (int, string) {
 		return -1, status.Signal().String()
 	}
 	return status.ExitStatus(), ""
+}
+
+func discoverSessionMetadata(startedAt time.Time, args []string, req runner.Request) (string, string) {
+	if hasArg(args, "--no-session") {
+		return "", ""
+	}
+	if sessionRef := argValue(args, "--session"); sessionRef != "" {
+		if path := cleanSessionPath(sessionRef); path != "" {
+			return sessionIDFromPath(path), path
+		}
+		return sessionRef, ""
+	}
+
+	sessionDir := argValue(args, "--session-dir")
+	if sessionDir == "" {
+		sessionDir = envValue(req.Env, "PI_CODING_AGENT_SESSION_DIR")
+	}
+	if sessionDir == "" {
+		sessionDir = os.Getenv("PI_CODING_AGENT_SESSION_DIR")
+	}
+	if sessionDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", ""
+		}
+		sessionDir = filepath.Join(home, ".pi", "agent", "sessions")
+	}
+
+	workDir := req.WorkDir
+	if workDir == "" {
+		var err error
+		workDir, err = os.Getwd()
+		if err != nil {
+			return "", ""
+		}
+	}
+	if abs, err := filepath.Abs(workDir); err == nil {
+		workDir = abs
+	}
+
+	projectDir := filepath.Join(sessionDir, sessionProjectDir(workDir))
+	path := newestSessionFile(projectDir, startedAt)
+	if path == "" {
+		path = newestSessionFile(sessionDir, startedAt)
+	}
+	return sessionIDFromPath(path), path
+}
+
+func hasArg(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == name {
+			return true
+		}
+	}
+	return false
+}
+
+func argValue(args []string, name string) string {
+	prefix := name + "="
+	for i, arg := range args {
+		if strings.HasPrefix(arg, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(arg, prefix))
+		}
+		if arg == name && i+1 < len(args) {
+			return strings.TrimSpace(args[i+1])
+		}
+	}
+	return ""
+}
+
+func envValue(env []string, name string) string {
+	prefix := name + "="
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			return strings.TrimPrefix(item, prefix)
+		}
+	}
+	return ""
+}
+
+func cleanSessionPath(ref string) string {
+	if strings.HasSuffix(ref, ".jsonl") || strings.ContainsRune(ref, os.PathSeparator) {
+		if abs, err := filepath.Abs(ref); err == nil {
+			return abs
+		}
+		return ref
+	}
+	return ""
+}
+
+func sessionProjectDir(workDir string) string {
+	trimmed := strings.Trim(filepath.ToSlash(workDir), "/")
+	if trimmed == "" {
+		return "--"
+	}
+	return "--" + strings.ReplaceAll(trimmed, "/", "-") + "--"
+}
+
+func newestSessionFile(root string, startedAt time.Time) string {
+	var newestPath string
+	var newestMod time.Time
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || filepath.Ext(path) != ".jsonl" {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil || info.ModTime().Before(startedAt.Add(-time.Second)) {
+			return nil
+		}
+		if newestPath == "" || info.ModTime().After(newestMod) {
+			newestPath = path
+			newestMod = info.ModTime()
+		}
+		return nil
+	})
+	return newestPath
+}
+
+func sessionIDFromPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if index := strings.LastIndex(base, "_"); index >= 0 && index+1 < len(base) {
+		return base[index+1:]
+	}
+	return base
 }
 
 var _ runner.Runner = (*Runner)(nil)

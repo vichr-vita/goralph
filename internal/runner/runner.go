@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"io"
 	"time"
 )
 
@@ -11,6 +12,9 @@ type Request struct {
 	WorkDir     string
 	Env         []string
 	Interactive bool
+	Quiet       bool
+	Stdout      io.Writer
+	Stderr      io.Writer
 }
 
 // Metadata describes one runner execution.

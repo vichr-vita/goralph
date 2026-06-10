@@ -1,6 +1,7 @@
 package pi
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -30,6 +31,7 @@ func TestRunExecutesConfiguredCommandAndReturnsMetadata(t *testing.T) {
 	result, err := r.Run(context.Background(), runner.Request{
 		Prompt: "hello prompt",
 		Env:    []string{"GORALPH_ARGS_FILE=" + argsPath},
+		Quiet:  true,
 	})
 	if err != nil {
 		t.Fatalf("run pi: %v", err)
@@ -78,11 +80,15 @@ func TestRunInteractiveLaunchesTUIWithoutPrintFlag(t *testing.T) {
 	argsPath := filepath.Join(t.TempDir(), "interactive-args.txt")
 	script := writeScript(t, "interactive.sh", "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > \"$GORALPH_ARGS_FILE\"\nprintf 'interactive stdout\\n'\nprintf 'interactive stderr\\n' >&2\n")
 	r := New(script, []string{"--provider", "test-provider", "--print", "--model", "test-model", "-p"})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
 
 	result, err := r.Run(context.Background(), runner.Request{
 		Prompt:      "initial prompt",
 		Env:         []string{"GORALPH_ARGS_FILE=" + argsPath},
 		Interactive: true,
+		Stdout:      &stdout,
+		Stderr:      &stderr,
 	})
 	if err != nil {
 		t.Fatalf("run pi interactive: %v", err)
@@ -99,13 +105,75 @@ func TestRunInteractiveLaunchesTUIWithoutPrintFlag(t *testing.T) {
 	if result.Stderr != "interactive stderr\n" {
 		t.Fatalf("stderr = %q, want interactive stderr", result.Stderr)
 	}
+	if stdout.String() != "interactive stdout\n" {
+		t.Fatalf("live stdout = %q, want interactive stdout", stdout.String())
+	}
+	if stderr.String() != "interactive stderr\n" {
+		t.Fatalf("live stderr = %q, want interactive stderr", stderr.String())
+	}
+}
+
+func TestRunStreamsByDefaultAndQuietSuppressesLiveOutput(t *testing.T) {
+	script := writeScript(t, "stream.sh", "#!/bin/sh\nprintf 'live stdout\\n'\nprintf 'live stderr\\n' >&2\n")
+	r := New(script, []string{"-p"})
+
+	var liveStdout bytes.Buffer
+	var liveStderr bytes.Buffer
+	result, err := r.Run(context.Background(), runner.Request{Prompt: "stream prompt", Stdout: &liveStdout, Stderr: &liveStderr})
+	if err != nil {
+		t.Fatalf("run streaming pi: %v", err)
+	}
+	if liveStdout.String() != result.Stdout || liveStderr.String() != result.Stderr {
+		t.Fatalf("live output = (%q, %q), result = (%q, %q)", liveStdout.String(), liveStderr.String(), result.Stdout, result.Stderr)
+	}
+
+	liveStdout.Reset()
+	liveStderr.Reset()
+	result, err = r.Run(context.Background(), runner.Request{Prompt: "quiet prompt", Quiet: true, Stdout: &liveStdout, Stderr: &liveStderr})
+	if err != nil {
+		t.Fatalf("run quiet pi: %v", err)
+	}
+	if liveStdout.Len() != 0 || liveStderr.Len() != 0 {
+		t.Fatalf("quiet live output = (%q, %q), want empty", liveStdout.String(), liveStderr.String())
+	}
+	if result.Stdout != "live stdout\n" || result.Stderr != "live stderr\n" {
+		t.Fatalf("quiet captured output = (%q, %q)", result.Stdout, result.Stderr)
+	}
+}
+
+func TestRunDiscoversSessionFileMetadata(t *testing.T) {
+	workDir := t.TempDir()
+	sessionDir := t.TempDir()
+	projectDir := filepath.Join(sessionDir, sessionProjectDir(workDir))
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("create session dir: %v", err)
+	}
+	sessionFile := filepath.Join(projectDir, "2026-06-10T00-00-00-000Z_019eb1ce-4932-713d-937c-d5be0d1b8d5e.jsonl")
+	script := writeScript(t, "session.sh", "#!/bin/sh\nprintf 'session output\\n'\nprintf '{}' > \"$GORALPH_SESSION_FILE\"\n")
+	r := New(script, []string{"-p", "--session-dir", sessionDir})
+
+	result, err := r.Run(context.Background(), runner.Request{
+		Prompt:  "session prompt",
+		WorkDir: workDir,
+		Env:     []string{"GORALPH_SESSION_FILE=" + sessionFile},
+		Quiet:   true,
+	})
+	if err != nil {
+		t.Fatalf("run pi session: %v", err)
+	}
+	if result.Metadata.SessionPath != sessionFile {
+		t.Fatalf("session path = %q, want %q", result.Metadata.SessionPath, sessionFile)
+	}
+	if result.Metadata.SessionID != "019eb1ce-4932-713d-937c-d5be0d1b8d5e" {
+		t.Fatalf("session id = %q", result.Metadata.SessionID)
+	}
 }
 
 func TestRunRecordsNonZeroExitMetadata(t *testing.T) {
 	script := writeScript(t, "fail.sh", "#!/bin/sh\nprintf 'failed stdout\\n'\nprintf 'failed stderr\\n' >&2\nexit 7\n")
 	r := New(script, []string{"-p"})
 
-	result, err := r.Run(context.Background(), runner.Request{Prompt: "fail prompt"})
+	result, err := r.Run(context.Background(), runner.Request{Prompt: "fail prompt", Quiet: true})
 	if err == nil {
 		t.Fatalf("run pi error nil, want non-zero exit error")
 	}

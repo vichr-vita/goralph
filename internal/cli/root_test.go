@@ -813,6 +813,65 @@ func TestProgressAddAndListSupportsTaskFilterJSONAndActiveRun(t *testing.T) {
 	}
 }
 
+func TestRunShowPrintsMetadataProgressAndSessionPath(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	prdPath := writePRDFile(t, `[
+		{"category":"runner","description":"stream output","steps":["one"],"passes":false}
+	]`)
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	runID := seedRun(t, dbPath, repoRoot, tasks[0].id)
+	seedRunProgress(t, dbPath, repoRoot, tasks[0].id, runID, "agent made progress")
+
+	stdout := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "run", "show", strconv.FormatInt(runID, 10)})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run show: %v", err)
+	}
+	for _, want := range []string{"Run ", "Runner: pi", "Model: test-model", "Status: succeeded", "Exit code: 0", "Session ID: session-123", "Session file: /tmp/session.jsonl", "agent made progress"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("run show output missing %q:\n%s", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "run", "show", strconv.FormatInt(runID, 10)})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run show JSON: %v", err)
+	}
+	var out runOutput
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode run show JSON %q: %v", stdout.String(), err)
+	}
+	if out.SessionID != "session-123" || out.SessionPath != "/tmp/session.jsonl" || len(out.Progress) != 1 || out.Progress[0].Summary != "agent made progress" {
+		t.Fatalf("run show JSON = %+v", out)
+	}
+}
+
 func TestDBPathPrintsResolvedDatabasePath(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -946,6 +1005,48 @@ func seedTaskProgress(t *testing.T, dbPath string, taskID int64, progressReport 
 		if _, err := database.Exec("INSERT INTO progress (project_id, task_id, summary) VALUES (?, ?, ?)", projectID, taskID, summary); err != nil {
 			t.Fatalf("insert task progress: %v", err)
 		}
+	}
+}
+
+func seedRun(t *testing.T, dbPath string, rootPath string, taskID int64) int64 {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	var projectID int64
+	if err := database.QueryRow("SELECT id FROM project WHERE root_path = ?", rootPath).Scan(&projectID); err != nil {
+		t.Fatalf("query project id: %v", err)
+	}
+	result, err := database.Exec("INSERT INTO run (project_id, task_id, runner_name, runner_model, session_id, session_path, status, exit_code, pid, host, started_at, finished_at) VALUES (?, ?, 'pi', 'test-model', 'session-123', '/tmp/session.jsonl', 'succeeded', 0, 42, 'test-host', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", projectID, taskID)
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	runID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("read run id: %v", err)
+	}
+	return runID
+}
+
+func seedRunProgress(t *testing.T, dbPath string, rootPath string, taskID int64, runID int64, summary string) {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	var projectID int64
+	if err := database.QueryRow("SELECT id FROM project WHERE root_path = ?", rootPath).Scan(&projectID); err != nil {
+		t.Fatalf("query project id: %v", err)
+	}
+	if _, err := database.Exec("INSERT INTO progress (project_id, task_id, run_id, summary) VALUES (?, ?, ?, ?)", projectID, taskID, runID, summary); err != nil {
+		t.Fatalf("insert run progress: %v", err)
 	}
 }
 

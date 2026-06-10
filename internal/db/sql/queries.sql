@@ -97,6 +97,17 @@ WHERE project_id = ? AND status = 'running'
 ORDER BY COALESCE(started_at, created_at) DESC, id DESC
 LIMIT 1;
 
+-- name: GetRunByProjectAndID :one
+SELECT id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at
+FROM run
+WHERE project_id = ? AND id = ?;
+
+-- name: ListProgressByRun :many
+SELECT id, project_id, task_id, run_id, summary, created_at, updated_at
+FROM progress
+WHERE project_id = ? AND run_id = ?
+ORDER BY created_at DESC, id DESC;
+
 -- name: ListProgressByProject :many
 SELECT id, project_id, task_id, run_id, summary, created_at, updated_at
 FROM progress

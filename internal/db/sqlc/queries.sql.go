@@ -247,6 +247,44 @@ func (q *Queries) GetProjectByRootPath(ctx context.Context, rootPath string) (Pr
 	return i, err
 }
 
+const getRunByProjectAndID = `-- name: GetRunByProjectAndID :one
+SELECT id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at
+FROM run
+WHERE project_id = ? AND id = ?
+`
+
+type GetRunByProjectAndIDParams struct {
+	ProjectID int64
+	ID        int64
+}
+
+func (q *Queries) GetRunByProjectAndID(ctx context.Context, arg GetRunByProjectAndIDParams) (Run, error) {
+	row := q.db.QueryRowContext(ctx, getRunByProjectAndID, arg.ProjectID, arg.ID)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.RunnerName,
+		&i.RunnerVersion,
+		&i.RunnerModel,
+		&i.SessionID,
+		&i.SessionPath,
+		&i.Status,
+		&i.ExitCode,
+		&i.ExitSignal,
+		&i.ExitError,
+		&i.Pid,
+		&i.Host,
+		&i.HeartbeatAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getTaskByProjectAndID = `-- name: GetTaskByProjectAndID :one
 SELECT id, project_id, category, description, status, progress_report, created_at, updated_at
 FROM task
@@ -370,6 +408,49 @@ type ListProgressByProjectAndTaskParams struct {
 
 func (q *Queries) ListProgressByProjectAndTask(ctx context.Context, arg ListProgressByProjectAndTaskParams) ([]Progress, error) {
 	rows, err := q.db.QueryContext(ctx, listProgressByProjectAndTask, arg.ProjectID, arg.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Progress
+	for rows.Next() {
+		var i Progress
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.TaskID,
+			&i.RunID,
+			&i.Summary,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProgressByRun = `-- name: ListProgressByRun :many
+SELECT id, project_id, task_id, run_id, summary, created_at, updated_at
+FROM progress
+WHERE project_id = ? AND run_id = ?
+ORDER BY created_at DESC, id DESC
+`
+
+type ListProgressByRunParams struct {
+	ProjectID int64
+	RunID     sql.NullInt64
+}
+
+func (q *Queries) ListProgressByRun(ctx context.Context, arg ListProgressByRunParams) ([]Progress, error) {
+	rows, err := q.db.QueryContext(ctx, listProgressByRun, arg.ProjectID, arg.RunID)
 	if err != nil {
 		return nil, err
 	}

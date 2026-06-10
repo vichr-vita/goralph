@@ -265,7 +265,7 @@
       "Store session IDs and session files for full transcript lookup",
       "Make run show display metadata, progress, and session file paths"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "runner",
