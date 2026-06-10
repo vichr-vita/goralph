@@ -145,6 +145,77 @@ func (q *Queries) GetProjectByRootPath(ctx context.Context, rootPath string) (Pr
 	return i, err
 }
 
+const getTaskByProjectAndID = `-- name: GetTaskByProjectAndID :one
+SELECT id, project_id, category, description, status, progress_report, created_at, updated_at
+FROM task
+WHERE project_id = ? AND id = ?
+`
+
+type GetTaskByProjectAndIDParams struct {
+	ProjectID int64
+	ID        int64
+}
+
+func (q *Queries) GetTaskByProjectAndID(ctx context.Context, arg GetTaskByProjectAndIDParams) (Task, error) {
+	row := q.db.QueryRowContext(ctx, getTaskByProjectAndID, arg.ProjectID, arg.ID)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Category,
+		&i.Description,
+		&i.Status,
+		&i.ProgressReport,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const listLatestProgressByTask = `-- name: ListLatestProgressByTask :many
+SELECT id, project_id, task_id, run_id, summary, created_at, updated_at
+FROM progress
+WHERE task_id = ?
+ORDER BY created_at DESC, id DESC
+LIMIT ?
+`
+
+type ListLatestProgressByTaskParams struct {
+	TaskID sql.NullInt64
+	Limit  int64
+}
+
+func (q *Queries) ListLatestProgressByTask(ctx context.Context, arg ListLatestProgressByTaskParams) ([]Progress, error) {
+	rows, err := q.db.QueryContext(ctx, listLatestProgressByTask, arg.TaskID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Progress
+	for rows.Next() {
+		var i Progress
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.TaskID,
+			&i.RunID,
+			&i.Summary,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTaskPRDRowsByProject = `-- name: ListTaskPRDRowsByProject :many
 SELECT
     t.id,
@@ -181,6 +252,126 @@ func (q *Queries) ListTaskPRDRowsByProject(ctx context.Context, projectID int64)
 			&i.Description,
 			&i.Status,
 			&i.StepDescription,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTaskStepsByTask = `-- name: ListTaskStepsByTask :many
+SELECT id, task_id, position, description, created_at, updated_at
+FROM task_step
+WHERE task_id = ?
+ORDER BY position
+`
+
+func (q *Queries) ListTaskStepsByTask(ctx context.Context, taskID int64) ([]TaskStep, error) {
+	rows, err := q.db.QueryContext(ctx, listTaskStepsByTask, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TaskStep
+	for rows.Next() {
+		var i TaskStep
+		if err := rows.Scan(
+			&i.ID,
+			&i.TaskID,
+			&i.Position,
+			&i.Description,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTasksByProject = `-- name: ListTasksByProject :many
+SELECT id, project_id, category, description, status, progress_report, created_at, updated_at
+FROM task
+WHERE project_id = ?
+ORDER BY id
+`
+
+func (q *Queries) ListTasksByProject(ctx context.Context, projectID int64) ([]Task, error) {
+	rows, err := q.db.QueryContext(ctx, listTasksByProject, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Task
+	for rows.Next() {
+		var i Task
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Category,
+			&i.Description,
+			&i.Status,
+			&i.ProgressReport,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTasksByProjectAndStatus = `-- name: ListTasksByProjectAndStatus :many
+SELECT id, project_id, category, description, status, progress_report, created_at, updated_at
+FROM task
+WHERE project_id = ? AND status = ?
+ORDER BY id
+`
+
+type ListTasksByProjectAndStatusParams struct {
+	ProjectID int64
+	Status    string
+}
+
+func (q *Queries) ListTasksByProjectAndStatus(ctx context.Context, arg ListTasksByProjectAndStatusParams) ([]Task, error) {
+	rows, err := q.db.QueryContext(ctx, listTasksByProjectAndStatus, arg.ProjectID, arg.Status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Task
+	for rows.Next() {
+		var i Task
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Category,
+			&i.Description,
+			&i.Status,
+			&i.ProgressReport,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

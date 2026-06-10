@@ -12,3 +12,4 @@
 2026-06-10: Implemented strict PRD JSON array validation command; go test ./... passed.
 2026-06-10T14:30:09Z - Implemented PRD import replace-by-default, --replace, --append; verified gofmt/sqlc/go test/CLI checks.
 2026-06-10T14:37:07Z - Implemented PRD export command with stdout/file pretty JSON, ordered steps, passed-status pass mapping; verified sqlc/gofmt/go test/CLI checks.
+2026-06-10: implemented task list/show CLI with status filter, JSON, steps, timestamps, progress report, latest progress entries.

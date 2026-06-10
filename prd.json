@@ -178,7 +178,7 @@
       "Display steps, status, progress report, timestamps, and latest progress entries",
       "Support --json for machine-readable output"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "cli",

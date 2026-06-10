@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -436,6 +437,91 @@ func TestPRDExportWritesStdoutAndFile(t *testing.T) {
 	assertExportedPRD(t, data)
 }
 
+func TestTaskListSupportsStatusFilterAndJSON(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	_, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	prdPath := writePRDFile(t, `[
+		{"category":"cli","description":"pending task","steps":["one","two"],"passes":false},
+		{"category":"db","description":"passed task","steps":["done"],"passes":true}
+	]`)
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "task", "list", "--status", "passed"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute task list: %v", err)
+	}
+
+	var got []taskOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode task list JSON %q: %v", stdout.String(), err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("task list count = %d, want 1", len(got))
+	}
+	if got[0].Description != "passed task" || got[0].Status != "passed" || len(got[0].Steps) != 1 || got[0].Steps[0].Description != "done" {
+		t.Fatalf("task list JSON = %+v, want passed task with step", got[0])
+	}
+}
+
+func TestTaskShowPrintsDetailsAndLatestProgress(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	prdPath := writePRDFile(t, `[{"category":"cli","description":"inspect me","steps":["one","two"],"passes":false}]`)
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	seedTaskProgress(t, dbPath, tasks[0].id, "agent says 60%", []string{"first progress", "latest progress"})
+
+	stdout := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "task", "show", strconv.FormatInt(tasks[0].id, 10)})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute task show: %v", err)
+	}
+
+	output := stdout.String()
+	for _, want := range []string{"Task ", "Status: pending", "Progress report: agent says 60%", "1. one", "2. two", "latest progress"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("task show output = %q, want %q", output, want)
+		}
+	}
+}
+
 func TestDBPathPrintsResolvedDatabasePath(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -544,6 +630,30 @@ type importedTaskRow struct {
 	description string
 	status      string
 	steps       string
+}
+
+func seedTaskProgress(t *testing.T, dbPath string, taskID int64, progressReport string, summaries []string) {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	if _, err := database.Exec("UPDATE task SET progress_report = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", progressReport, taskID); err != nil {
+		t.Fatalf("update task progress report: %v", err)
+	}
+
+	var projectID int64
+	if err := database.QueryRow("SELECT project_id FROM task WHERE id = ?", taskID).Scan(&projectID); err != nil {
+		t.Fatalf("query task project: %v", err)
+	}
+	for _, summary := range summaries {
+		if _, err := database.Exec("INSERT INTO progress (project_id, task_id, summary) VALUES (?, ?, ?)", projectID, taskID, summary); err != nil {
+			t.Fatalf("insert task progress: %v", err)
+		}
+	}
 }
 
 func reorderTaskSteps(t *testing.T, dbPath string) {

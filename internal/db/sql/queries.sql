@@ -20,6 +20,36 @@ RETURNING id, name, root_path, description, created_at, updated_at;
 -- name: CountTasksByProject :one
 SELECT COUNT(*) FROM task WHERE project_id = ?;
 
+-- name: ListTasksByProject :many
+SELECT id, project_id, category, description, status, progress_report, created_at, updated_at
+FROM task
+WHERE project_id = ?
+ORDER BY id;
+
+-- name: ListTasksByProjectAndStatus :many
+SELECT id, project_id, category, description, status, progress_report, created_at, updated_at
+FROM task
+WHERE project_id = ? AND status = ?
+ORDER BY id;
+
+-- name: GetTaskByProjectAndID :one
+SELECT id, project_id, category, description, status, progress_report, created_at, updated_at
+FROM task
+WHERE project_id = ? AND id = ?;
+
+-- name: ListTaskStepsByTask :many
+SELECT id, task_id, position, description, created_at, updated_at
+FROM task_step
+WHERE task_id = ?
+ORDER BY position;
+
+-- name: ListLatestProgressByTask :many
+SELECT id, project_id, task_id, run_id, summary, created_at, updated_at
+FROM progress
+WHERE task_id = ?
+ORDER BY created_at DESC, id DESC
+LIMIT ?;
+
 -- name: ListTaskPRDRowsByProject :many
 SELECT
     t.id,
