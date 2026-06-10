@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"goralph/internal/db/sqlc"
+	"github.com/vichr-vita/goralph/internal/db/sqlc"
 )
 
 func openMigratedTempDB(t *testing.T) (*sql.DB, *sqlc.Queries) {

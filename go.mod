@@ -1,4 +1,4 @@
-module goralph
+module github.com/vichr-vita/goralph
 
 go 1.25.7
 

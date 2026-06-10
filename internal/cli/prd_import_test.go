@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"goralph/internal/db"
-	"goralph/internal/db/sqlc"
-	"goralph/internal/prd"
+	"github.com/vichr-vita/goralph/internal/db"
+	"github.com/vichr-vita/goralph/internal/db/sqlc"
+	"github.com/vichr-vita/goralph/internal/prd"
 )
 
 func TestImportPRDItemsReplaceAndAppendAgainstTempDatabase(t *testing.T) {

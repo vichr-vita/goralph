@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	gitrepo "goralph/internal/git"
+	gitrepo "github.com/vichr-vita/goralph/internal/git"
 
 	"github.com/spf13/cobra"
 )

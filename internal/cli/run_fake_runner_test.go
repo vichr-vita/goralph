@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"goralph/internal/runner"
+	"github.com/vichr-vita/goralph/internal/runner"
 )
 
 type fakeAgentRunner struct {

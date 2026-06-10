@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"goralph/internal/db"
-	"goralph/internal/db/sqlc"
+	"github.com/vichr-vita/goralph/internal/db"
+	"github.com/vichr-vita/goralph/internal/db/sqlc"
 
 	"github.com/spf13/cobra"
 )

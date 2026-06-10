@@ -1,6 +1,6 @@
 package prd
 
-import "goralph/internal/db"
+import "github.com/vichr-vita/goralph/internal/db"
 
 // Task is the persisted task shape needed for PRD export.
 type Task struct {

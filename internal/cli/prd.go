@@ -9,9 +9,9 @@ import (
 	"os"
 	"strings"
 
-	"goralph/internal/db"
-	"goralph/internal/db/sqlc"
-	"goralph/internal/prd"
+	"github.com/vichr-vita/goralph/internal/db"
+	"github.com/vichr-vita/goralph/internal/db/sqlc"
+	"github.com/vichr-vita/goralph/internal/prd"
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"

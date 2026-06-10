@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"goralph/internal/config"
-	"goralph/internal/db"
-	"goralph/internal/db/sqlc"
-	gitrepo "goralph/internal/git"
+	"github.com/vichr-vita/goralph/internal/config"
+	"github.com/vichr-vita/goralph/internal/db"
+	"github.com/vichr-vita/goralph/internal/db/sqlc"
+	gitrepo "github.com/vichr-vita/goralph/internal/git"
 
 	"github.com/spf13/cobra"
 )

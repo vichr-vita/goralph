@@ -13,12 +13,12 @@ import (
 	"syscall"
 	"time"
 
-	"goralph/internal/db"
-	"goralph/internal/db/sqlc"
-	gitrepo "goralph/internal/git"
-	"goralph/internal/loop"
-	"goralph/internal/runner"
-	"goralph/internal/runner/pi"
+	"github.com/vichr-vita/goralph/internal/db"
+	"github.com/vichr-vita/goralph/internal/db/sqlc"
+	gitrepo "github.com/vichr-vita/goralph/internal/git"
+	"github.com/vichr-vita/goralph/internal/loop"
+	"github.com/vichr-vita/goralph/internal/runner"
+	"github.com/vichr-vita/goralph/internal/runner/pi"
 
 	"github.com/spf13/cobra"
 )

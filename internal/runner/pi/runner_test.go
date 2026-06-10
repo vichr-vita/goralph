@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"goralph/internal/runner"
+	"github.com/vichr-vita/goralph/internal/runner"
 )
 
 func TestNewDefaultsToPiCommandAndPromptArg(t *testing.T) {

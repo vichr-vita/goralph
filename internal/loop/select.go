@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"goralph/internal/db"
-	"goralph/internal/db/sqlc"
+	"github.com/vichr-vita/goralph/internal/db"
+	"github.com/vichr-vita/goralph/internal/db/sqlc"
 )
 
 // TaskSelection is the outcome of looking for agent-selectable work.

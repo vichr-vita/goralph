@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"goralph/internal/db"
-	"goralph/internal/db/sqlc"
+	"github.com/vichr-vita/goralph/internal/db"
+	"github.com/vichr-vita/goralph/internal/db/sqlc"
 )
 
 func TestSelectEligibleTaskChoosesPendingBeforeFailed(t *testing.T) {

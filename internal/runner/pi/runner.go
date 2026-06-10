@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"goralph/internal/runner"
+	"github.com/vichr-vita/goralph/internal/runner"
 )
 
 const (

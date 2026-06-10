@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"goralph/internal/config"
+	"github.com/vichr-vita/goralph/internal/config"
 
 	"github.com/spf13/cobra"
 )

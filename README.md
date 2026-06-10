@@ -6,7 +6,42 @@
 
 ## Install or build
 
-From this repository:
+Install version `v0.1.0` from GitHub:
+
+```sh
+go install github.com/vichr-vita/goralph/cmd/goralph@v0.1.0
+goralph --help
+```
+
+If `goralph` is not found, add your Go binary directory to `PATH`.
+
+For zsh:
+
+```sh
+echo 'export PATH="$(go env GOPATH)/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+For bash:
+
+```sh
+echo 'export PATH="$(go env GOPATH)/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Update installed binary to `v0.1.0`:
+
+```sh
+go install github.com/vichr-vita/goralph/cmd/goralph@v0.1.0
+```
+
+Uninstall:
+
+```sh
+rm "$(go env GOPATH)/bin/goralph"
+```
+
+Build from this repository:
 
 ```sh
 make test
@@ -14,7 +49,7 @@ make build
 ./target/goralph --help
 ```
 
-To install into your Go bin directory:
+Install from this checkout for local changes:
 
 ```sh
 go install ./cmd/goralph

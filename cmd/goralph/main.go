@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"goralph/internal/cli"
+	"github.com/vichr-vita/goralph/internal/cli"
 )
 
 func main() {
