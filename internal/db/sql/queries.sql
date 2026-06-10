@@ -90,6 +90,25 @@ INSERT INTO progress (project_id, task_id, run_id, summary)
 VALUES (?, ?, ?, ?)
 RETURNING id, project_id, task_id, run_id, summary, created_at, updated_at;
 
+-- name: ListFeedbackCommandsByProject :many
+SELECT id, project_id, name, command, created_at, updated_at
+FROM feedback_command
+WHERE project_id = ?
+ORDER BY name;
+
+-- name: GetFeedbackCommandByProjectAndName :one
+SELECT id, project_id, name, command, created_at, updated_at
+FROM feedback_command
+WHERE project_id = ? AND name = ?;
+
+-- name: UpsertFeedbackCommand :one
+INSERT INTO feedback_command (project_id, name, command)
+VALUES (?, ?, ?)
+ON CONFLICT(project_id, name) DO UPDATE SET
+    command = excluded.command,
+    updated_at = CURRENT_TIMESTAMP
+RETURNING id, project_id, name, command, created_at, updated_at;
+
 -- name: CreateRun :one
 INSERT INTO run (project_id, task_id, runner_name, status, host, started_at, heartbeat_at)
 VALUES (?, ?, ?, 'running', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)

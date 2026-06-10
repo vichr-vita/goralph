@@ -325,6 +325,31 @@ func (q *Queries) GetActiveRunByProject(ctx context.Context, projectID int64) (R
 	return i, err
 }
 
+const getFeedbackCommandByProjectAndName = `-- name: GetFeedbackCommandByProjectAndName :one
+SELECT id, project_id, name, command, created_at, updated_at
+FROM feedback_command
+WHERE project_id = ? AND name = ?
+`
+
+type GetFeedbackCommandByProjectAndNameParams struct {
+	ProjectID int64
+	Name      string
+}
+
+func (q *Queries) GetFeedbackCommandByProjectAndName(ctx context.Context, arg GetFeedbackCommandByProjectAndNameParams) (FeedbackCommand, error) {
+	row := q.db.QueryRowContext(ctx, getFeedbackCommandByProjectAndName, arg.ProjectID, arg.Name)
+	var i FeedbackCommand
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Name,
+		&i.Command,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getNextEligibleTaskByProject = `-- name: GetNextEligibleTaskByProject :one
 SELECT id, project_id, category, description, status, progress_report, created_at, updated_at
 FROM task
@@ -432,6 +457,43 @@ func (q *Queries) GetTaskByProjectAndID(ctx context.Context, arg GetTaskByProjec
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listFeedbackCommandsByProject = `-- name: ListFeedbackCommandsByProject :many
+SELECT id, project_id, name, command, created_at, updated_at
+FROM feedback_command
+WHERE project_id = ?
+ORDER BY name
+`
+
+func (q *Queries) ListFeedbackCommandsByProject(ctx context.Context, projectID int64) ([]FeedbackCommand, error) {
+	rows, err := q.db.QueryContext(ctx, listFeedbackCommandsByProject, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FeedbackCommand
+	for rows.Next() {
+		var i FeedbackCommand
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Name,
+			&i.Command,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listLatestProgressByTask = `-- name: ListLatestProgressByTask :many
@@ -1043,6 +1105,35 @@ func (q *Queries) UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, e
 		&i.Description,
 		&i.Status,
 		&i.ProgressReport,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertFeedbackCommand = `-- name: UpsertFeedbackCommand :one
+INSERT INTO feedback_command (project_id, name, command)
+VALUES (?, ?, ?)
+ON CONFLICT(project_id, name) DO UPDATE SET
+    command = excluded.command,
+    updated_at = CURRENT_TIMESTAMP
+RETURNING id, project_id, name, command, created_at, updated_at
+`
+
+type UpsertFeedbackCommandParams struct {
+	ProjectID int64
+	Name      string
+	Command   string
+}
+
+func (q *Queries) UpsertFeedbackCommand(ctx context.Context, arg UpsertFeedbackCommandParams) (FeedbackCommand, error) {
+	row := q.db.QueryRowContext(ctx, upsertFeedbackCommand, arg.ProjectID, arg.Name, arg.Command)
+	var i FeedbackCommand
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Name,
+		&i.Command,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

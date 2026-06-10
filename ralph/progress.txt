@@ -29,3 +29,4 @@ Implemented run one --task targeting with current-project validation and forced-
 2026-06-10 safety: clean git worktree guard before run one/all; --allow-dirty bypass; tests pass.
 2026-06-10: Rejected unsupported run all --task overrides with clear validation error and help text; added focused tests.
 2026-06-10: Implemented run all <promise>COMPLETE</promise> detection report; stops loop without auto-passing remaining tasks.
+2026-06-10: Implemented project feedback commands: list/set/run CLI, sqlc queries, prompt integration, tests, smoke.

@@ -445,7 +445,7 @@
       "Let the agent decide which feedback commands to run from prompt context",
       "Support manual feedback execution from the CLI"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

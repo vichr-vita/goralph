@@ -439,10 +439,14 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 	if err := requireNoActiveRunWithQueries(ctx, queries, project.ID, activePolicy); err != nil {
 		return runOutput{}, false, false, err
 	}
+	promptFeedbackCommands, err := feedbackPromptCommands(ctx, queries, project.ID, feedbackCommands)
+	if err != nil {
+		return runOutput{}, false, false, err
+	}
 	promptContract := loop.PromptContract{
 		ProjectName:      project.Name,
 		ProjectRootPath:  project.RootPath,
-		FeedbackCommands: feedbackCommands,
+		FeedbackCommands: promptFeedbackCommands,
 	}
 	beforeStatuses := map[int64]string{}
 	runTaskID := sql.NullInt64{}

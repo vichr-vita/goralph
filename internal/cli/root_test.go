@@ -830,6 +830,130 @@ func TestProgressAddAndListSupportsTaskFilterJSONAndActiveRun(t *testing.T) {
 	}
 }
 
+func TestFeedbackCommandsSetListAndRun(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	_, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	markerPath := filepath.Join(tempDir, "feedback.txt")
+
+	stdout := &bytes.Buffer{}
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "feedback", "set", "unit", "printf ok > " + strconv.Quote(markerPath)})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute feedback set: %v", err)
+	}
+	var set feedbackOutput
+	if err := json.Unmarshal(stdout.Bytes(), &set); err != nil {
+		t.Fatalf("decode feedback set JSON %q: %v", stdout.String(), err)
+	}
+	if set.Name != "unit" || !strings.Contains(set.Command, "printf ok") {
+		t.Fatalf("feedback set = %+v, want unit command", set)
+	}
+
+	stdout.Reset()
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "feedback", "list"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute feedback list: %v", err)
+	}
+	var listed []feedbackOutput
+	if err := json.Unmarshal(stdout.Bytes(), &listed); err != nil {
+		t.Fatalf("decode feedback list JSON %q: %v", stdout.String(), err)
+	}
+	if len(listed) != 1 || listed[0].Name != "unit" || listed[0].Command != set.Command {
+		t.Fatalf("feedback list = %+v, want unit command", listed)
+	}
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "feedback", "run", "unit"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute feedback run unit: %v", err)
+	}
+	if got := readTestFile(t, markerPath); got != "ok" {
+		t.Fatalf("feedback marker = %q, want ok", got)
+	}
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "feedback", "run", "missing"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "feedback command \"missing\" not found") {
+		t.Fatalf("feedback run missing error = %v, want not found", err)
+	}
+}
+
+func TestRunOnePromptIncludesProjectFeedbackCommands(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	promptPath := filepath.Join(tempDir, "prompt.txt")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"track feedback","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "feedback", "set", "unit", "go test ./..."})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute feedback set: %v", err)
+	}
+
+	runnerScript := "#!/bin/sh\nfor last do :; done\nprintf '%s' \"$last\" > " + strconv.Quote(promptPath) + "\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "one"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run one: %v", err)
+	}
+
+	prompt := readTestFile(t, promptPath)
+	for _, want := range []string{"unit: go test ./...", "goralph feedback run <name>", "decide which configured feedback commands fit this change"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestRunOneCreatesAndFinishesRunRecord(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
