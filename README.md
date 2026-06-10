@@ -193,7 +193,61 @@ If no Git root can be found, project-scoped commands fail with a project resolut
 
 ## PRD import and export workflow
 
-PRD files are JSON arrays. Each item has `category`, `description`, `steps`, and `passes`.
+PRD files use one strict top-level JSON array. Each array item must be an object with exactly these fields:
+
+```json
+[
+  {
+    "category": "documentation",
+    "description": "Document the PRD JSON schema and example",
+    "steps": [
+      "Show the required JSON array structure",
+      "Include a small valid PRD example"
+    ],
+    "passes": false
+  }
+]
+```
+
+Field meanings:
+
+- `category`: required non-empty string used to group or label the task.
+- `description`: required non-empty string and the task identity within the file.
+- `steps`: required array of string acceptance steps. Each step must be non-empty.
+- `passes`: required boolean completion marker.
+
+Strict validation rules:
+
+- The file must contain exactly one top-level JSON array and no trailing JSON value.
+- Every array item must be an object.
+- Only `category`, `description`, `steps`, and `passes` are allowed; unknown fields are rejected.
+- `category` and `description` must be strings that are not blank after trimming whitespace.
+- `steps` must be an array of strings; blank steps are rejected.
+- `passes` must be a JSON boolean, not a string or number.
+- `description` values must be unique within one imported file after trimming whitespace.
+
+`passes` maps to internal task status during import and export:
+
+- Importing `passes: true` creates the task with internal status `passed`.
+- Importing `passes: false` creates the task with internal status `pending`.
+- Export writes `passes: true` only for tasks whose internal status is `passed`.
+- Export writes `passes: false` for `pending`, `in_progress`, `failed`, and `blocked` tasks.
+
+Small valid PRD example:
+
+```json
+[
+  {
+    "category": "cli",
+    "description": "Add version command",
+    "steps": [
+      "Print the current version",
+      "Support JSON output"
+    ],
+    "passes": false
+  }
+]
+```
 
 Typical flow:
 

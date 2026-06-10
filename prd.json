@@ -616,7 +616,7 @@
       "Explain how passes maps to internal task status",
       "Include a small valid PRD example"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "documentation",
