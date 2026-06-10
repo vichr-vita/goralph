@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1109,6 +1110,240 @@ func TestRunOneReportsNoEligibleTasks(t *testing.T) {
 	}
 }
 
+func TestRunAllPassesPendingTasksUntilAllPassed(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	countPath := filepath.Join(tempDir, "count.txt")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prdPath := writePRDFile(t, `[
+		{"category":"runner","description":"first","steps":["one"],"passes":false},
+		{"category":"runner","description":"second","steps":["two"],"passes":false}
+	]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	if got := len(fetchImportedTasks(t, dbPath, repoRoot)); got != 2 {
+		t.Fatalf("task count = %d, want 2", got)
+	}
+
+	runnerScript := "#!/bin/sh\nprintf x >> " + strconv.Quote(countPath) + "\nGO_RALPH_TEST_HELPER=run_all_pass_pending GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunAllHelper$' >/dev/null\n"
+	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	viper.Reset()
+
+	stdout := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "all", "--max-turns", "5"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run all: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "All tasks passed") {
+		t.Fatalf("run all output = %q, want all passed", stdout.String())
+	}
+	if got := readTestFile(t, countPath); got != "xx" {
+		t.Fatalf("runner count = %q, want two turns", got)
+	}
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+	var pending int
+	if err := database.QueryRow("SELECT COUNT(*) FROM task WHERE status != 'passed'").Scan(&pending); err != nil {
+		t.Fatalf("count pending tasks: %v", err)
+	}
+	if pending != 0 {
+		t.Fatalf("unfinished tasks = %d, want 0", pending)
+	}
+	var runs int
+	if err := database.QueryRow("SELECT COUNT(*) FROM run WHERE status = 'succeeded'").Scan(&runs); err != nil {
+		t.Fatalf("count runs: %v", err)
+	}
+	if runs != 2 {
+		t.Fatalf("succeeded runs = %d, want 2", runs)
+	}
+}
+
+func TestRunAllStopsOnCompletePromise(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	_, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"pending","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nprintf '<promise>COMPLETE</promise>\\n'\n"), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "all"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run all complete promise: %v", err)
+	}
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+	var runs int
+	if err := database.QueryRow("SELECT COUNT(*) FROM run WHERE status = 'succeeded'").Scan(&runs); err != nil {
+		t.Fatalf("count runs: %v", err)
+	}
+	if runs != 1 {
+		t.Fatalf("runs = %d, want 1", runs)
+	}
+}
+
+func TestRunAllBlockedDefaultAndContinueOnBlocked(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	countPath := filepath.Join(tempDir, "count.txt")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prdPath := writePRDFile(t, `[
+		{"category":"runner","description":"blocked","steps":["one"],"passes":false},
+		{"category":"runner","description":"pending","steps":["two"],"passes":false}
+	]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if _, err := database.Exec("UPDATE task SET status = 'blocked' WHERE id = ?", tasks[0].id); err != nil {
+		t.Fatalf("block task: %v", err)
+	}
+	database.Close()
+	runnerScript := "#!/bin/sh\nprintf x >> " + strconv.Quote(countPath) + "\nGO_RALPH_TEST_HELPER=run_all_pass_pending GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunAllHelper$' >/dev/null\n"
+	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "all"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "blocked or failed tasks remain") {
+		t.Fatalf("run all blocked error = %v, want blocked stop", err)
+	}
+	if _, err := os.Stat(countPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runner count file err = %v, want not exist", err)
+	}
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "all", "--continue-on-blocked", "--max-turns", "3"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run all continue blocked: %v", err)
+	}
+	if got := readTestFile(t, countPath); got != "x" {
+		t.Fatalf("runner count = %q, want one turn", got)
+	}
+}
+
+func TestRunAllStopsAtMaxTurns(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	_, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	countPath := filepath.Join(tempDir, "count.txt")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"pending","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	runnerScript := "#!/bin/sh\nprintf x >> " + strconv.Quote(countPath) + "\nGO_RALPH_TEST_HELPER=run_all_progress_pending GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunAllHelper$' >/dev/null\n"
+	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	viper.Reset()
+
+	stdout := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "all", "--max-turns", "2"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run all max turns: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Max turns reached (2)") {
+		t.Fatalf("run all output = %q, want max turns", stdout.String())
+	}
+	if got := readTestFile(t, countPath); got != "xx" {
+		t.Fatalf("runner count = %q, want two turns", got)
+	}
+}
+
 func TestRunOneHelper(t *testing.T) {
 	if os.Getenv("GO_RALPH_TEST_HELPER") != "run_one_update" {
 		t.Skip("helper subprocess only")
@@ -1129,6 +1364,35 @@ func TestRunOneHelper(t *testing.T) {
 	if _, err := database.Exec(`
 INSERT INTO progress (project_id, task_id, run_id, summary)
 SELECT project_id, id, (SELECT id FROM run WHERE status = 'running' ORDER BY id DESC LIMIT 1), 'helper completed task'
+FROM task
+WHERE id = ?`, taskID); err != nil {
+		t.Fatalf("helper insert progress: %v", err)
+	}
+}
+
+func TestRunAllHelper(t *testing.T) {
+	helper := os.Getenv("GO_RALPH_TEST_HELPER")
+	if helper != "run_all_pass_pending" && helper != "run_all_progress_pending" {
+		t.Skip("helper subprocess only")
+	}
+	database, err := sql.Open("sqlite", os.Getenv("GO_RALPH_TEST_DB"))
+	if err != nil {
+		t.Fatalf("open helper database: %v", err)
+	}
+	defer database.Close()
+
+	var taskID int64
+	if err := database.QueryRow("SELECT id FROM task WHERE status = 'pending' ORDER BY id LIMIT 1").Scan(&taskID); err != nil {
+		t.Fatalf("select pending task: %v", err)
+	}
+	if helper == "run_all_pass_pending" {
+		if _, err := database.Exec("UPDATE task SET status = 'passed', updated_at = CURRENT_TIMESTAMP WHERE id = ?", taskID); err != nil {
+			t.Fatalf("helper pass task: %v", err)
+		}
+	}
+	if _, err := database.Exec(`
+INSERT INTO progress (project_id, task_id, run_id, summary)
+SELECT project_id, id, (SELECT id FROM run WHERE status = 'running' ORDER BY id DESC LIMIT 1), 'helper run all progress'
 FROM task
 WHERE id = ?`, taskID); err != nil {
 		t.Fatalf("helper insert progress: %v", err)

@@ -84,7 +84,7 @@ func newRunOneCommand(quiet *bool) *cobra.Command {
 				forcedTaskID = &taskID
 			}
 
-			run, ran, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, forcedTaskID, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			run, ran, _, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, forcedTaskID, false, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			if !ran {
 				_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
 				return printErr
@@ -100,10 +100,16 @@ func newRunOneCommand(quiet *bool) *cobra.Command {
 }
 
 func newRunAllCommand(quiet *bool) *cobra.Command {
-	return &cobra.Command{
+	var continueOnBlocked bool
+	var maxTurns int
+
+	cmd := &cobra.Command{
 		Use:   "all",
 		Short: "Run eligible task turns until none remain",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if maxTurns < 0 {
+				return fmt.Errorf("invalid max turns %d", maxTurns)
+			}
 			project, err := projectFromContext(cmd.Context())
 			if err != nil {
 				return err
@@ -114,9 +120,30 @@ func newRunAllCommand(quiet *bool) *cobra.Command {
 			}
 
 			runs := 0
-			seen := map[int64]struct{}{}
 			for {
-				run, ran, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, seen, nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				stop, err := inspectRunAllStop(cmd.Context(), settings.DBPath, project.ID, continueOnBlocked)
+				if err != nil {
+					return err
+				}
+				switch stop.kind {
+				case runAllStopAllPassed:
+					_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "All tasks passed")
+					return printErr
+				case runAllStopBlockedOrFailed:
+					return fmt.Errorf("blocked or failed tasks remain: %s", strings.Join(stop.descriptions, ", "))
+				case runAllStopNoEligible:
+					if runs == 0 {
+						_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
+						return printErr
+					}
+					return nil
+				}
+				if maxTurns > 0 && runs >= maxTurns {
+					_, printErr := fmt.Fprintf(cmd.OutOrStdout(), "Max turns reached (%d)\n", maxTurns)
+					return printErr
+				}
+
+				run, ran, complete, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, nil, continueOnBlocked, cmd.OutOrStdout(), cmd.ErrOrStderr())
 				if !ran {
 					if runs == 0 {
 						_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
@@ -131,18 +158,24 @@ func newRunAllCommand(quiet *bool) *cobra.Command {
 				if err := writeRun(cmd, run); err != nil {
 					return err
 				}
+				if complete {
+					return nil
+				}
 				if run.TaskID == nil {
 					return nil
 				}
 			}
 		},
 	}
+	cmd.Flags().BoolVar(&continueOnBlocked, "continue-on-blocked", false, "continue running pending tasks when blocked or failed tasks exist")
+	cmd.Flags().IntVar(&maxTurns, "max-turns", 0, "maximum agent turns to run (0 means unlimited)")
+	return cmd
 }
 
-func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, feedbackCommands []string, quiet bool, seen map[int64]struct{}, forcedTaskID *int64, stdout io.Writer, stderr io.Writer) (runOutput, bool, error) {
+func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, feedbackCommands []string, quiet bool, seen map[int64]struct{}, forcedTaskID *int64, pendingOnly bool, stdout io.Writer, stderr io.Writer) (runOutput, bool, bool, error) {
 	database, err := db.Open(dbPath)
 	if err != nil {
-		return runOutput{}, false, fmt.Errorf("open database: %w", err)
+		return runOutput{}, false, false, fmt.Errorf("open database: %w", err)
 	}
 	defer database.Close()
 
@@ -159,13 +192,13 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 		task, err := queries.GetTaskByProjectAndID(ctx, sqlc.GetTaskByProjectAndIDParams{ProjectID: project.ID, ID: *forcedTaskID})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return runOutput{}, true, fmt.Errorf("task %d not found", *forcedTaskID)
+				return runOutput{}, true, false, fmt.Errorf("task %d not found", *forcedTaskID)
 			}
-			return runOutput{}, true, fmt.Errorf("load task %d: %w", *forcedTaskID, err)
+			return runOutput{}, true, false, fmt.Errorf("load task %d: %w", *forcedTaskID, err)
 		}
 		promptTask, err := promptTaskFromRow(ctx, queries, task)
 		if err != nil {
-			return runOutput{}, true, err
+			return runOutput{}, true, false, err
 		}
 		promptContract.ForcedTask = &promptTask
 		beforeStatuses[task.ID] = task.Status
@@ -173,18 +206,21 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 	} else {
 		eligible, err := loop.SelectEligibleTasks(ctx, queries, project.ID)
 		if err != nil {
-			return runOutput{}, false, err
+			return runOutput{}, false, false, err
 		}
 		eligible = filterSeenTasks(eligible, seen)
+		if pendingOnly {
+			eligible = filterPendingTasks(eligible)
+		}
 		if len(eligible) == 0 {
-			return runOutput{}, false, nil
+			return runOutput{}, false, false, nil
 		}
 
 		promptTasks := make([]loop.PromptTask, 0, len(eligible))
 		for _, task := range eligible {
 			promptTask, err := promptTaskFromRow(ctx, queries, task)
 			if err != nil {
-				return runOutput{}, true, err
+				return runOutput{}, true, false, err
 			}
 			promptTasks = append(promptTasks, promptTask)
 			beforeStatuses[task.ID] = task.Status
@@ -201,7 +237,7 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 		Host:       host,
 	})
 	if err != nil {
-		return runOutput{}, true, fmt.Errorf("create run: %w", err)
+		return runOutput{}, true, false, fmt.Errorf("create run: %w", err)
 	}
 
 	result, runErr := pi.New(runnerCommand, runnerArgs).Run(ctx, runner.Request{
@@ -218,12 +254,16 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 	if metadata.Host == "" {
 		metadata.Host = started.Host
 	}
-	selectedTaskID, verifyErr := verifyAgentTaskUpdate(ctx, queries, project.ID, started.ID, beforeStatuses)
+	complete := hasCompletePromise(result.Stdout) || hasCompletePromise(result.Stderr)
+	selectedTaskID, verifyErr := int64(0), error(nil)
+	if !complete {
+		selectedTaskID, verifyErr = verifyAgentTaskUpdate(ctx, queries, project.ID, started.ID, beforeStatuses)
+	}
 	if verifyErr != nil {
 		if runErr == nil {
 			runErr = verifyErr
 		}
-	} else {
+	} else if selectedTaskID != 0 {
 		started, err = queries.SetRunTaskID(ctx, sqlc.SetRunTaskIDParams{
 			TaskID:    sql.NullInt64{Int64: selectedTaskID, Valid: true},
 			ProjectID: project.ID,
@@ -257,15 +297,70 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 		ID:            started.ID,
 	})
 	if finishErr != nil {
-		return runOutputFromRow(started), true, fmt.Errorf("finish run %d: %w", started.ID, finishErr)
+		return runOutputFromRow(started), true, complete, fmt.Errorf("finish run %d: %w", started.ID, finishErr)
 	}
 	if err := verifyFinishedRunMetadata(finished); err != nil {
-		return runOutputFromRow(finished), true, err
+		return runOutputFromRow(finished), true, complete, err
 	}
 	if runErr != nil {
-		return runOutputFromRow(finished), true, runErr
+		return runOutputFromRow(finished), true, complete, runErr
 	}
-	return runOutputFromRow(finished), true, nil
+	return runOutputFromRow(finished), true, complete, nil
+}
+
+type runAllStopKind string
+
+type runAllStop struct {
+	kind         runAllStopKind
+	descriptions []string
+}
+
+const (
+	runAllStopNone            runAllStopKind = ""
+	runAllStopAllPassed       runAllStopKind = "all_passed"
+	runAllStopBlockedOrFailed runAllStopKind = "blocked_or_failed"
+	runAllStopNoEligible      runAllStopKind = "no_eligible"
+)
+
+func inspectRunAllStop(ctx context.Context, dbPath string, projectID int64, continueOnBlocked bool) (runAllStop, error) {
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return runAllStop{}, fmt.Errorf("open database: %w", err)
+	}
+	defer database.Close()
+
+	tasks, err := sqlc.New(database).ListTasksByProject(ctx, projectID)
+	if err != nil {
+		return runAllStop{}, fmt.Errorf("list tasks: %w", err)
+	}
+	if len(tasks) == 0 {
+		return runAllStop{kind: runAllStopNoEligible}, nil
+	}
+
+	allPassed := true
+	hasPending := false
+	blockedOrFailed := make([]string, 0)
+	for _, task := range tasks {
+		if task.Status != string(db.TaskStatusPassed) {
+			allPassed = false
+		}
+		switch task.Status {
+		case string(db.TaskStatusPending):
+			hasPending = true
+		case string(db.TaskStatusBlocked), string(db.TaskStatusFailed):
+			blockedOrFailed = append(blockedOrFailed, fmt.Sprintf("%d %s", task.ID, task.Status))
+		}
+	}
+	if allPassed {
+		return runAllStop{kind: runAllStopAllPassed}, nil
+	}
+	if !continueOnBlocked && len(blockedOrFailed) > 0 {
+		return runAllStop{kind: runAllStopBlockedOrFailed, descriptions: blockedOrFailed}, nil
+	}
+	if !hasPending {
+		return runAllStop{kind: runAllStopNoEligible}, nil
+	}
+	return runAllStop{kind: runAllStopNone}, nil
 }
 
 func filterSeenTasks(tasks []sqlc.Task, seen map[int64]struct{}) []sqlc.Task {
@@ -279,6 +374,20 @@ func filterSeenTasks(tasks []sqlc.Task, seen map[int64]struct{}) []sqlc.Task {
 		}
 	}
 	return filtered
+}
+
+func filterPendingTasks(tasks []sqlc.Task) []sqlc.Task {
+	filtered := make([]sqlc.Task, 0, len(tasks))
+	for _, task := range tasks {
+		if task.Status == string(db.TaskStatusPending) {
+			filtered = append(filtered, task)
+		}
+	}
+	return filtered
+}
+
+func hasCompletePromise(output string) bool {
+	return strings.Contains(output, "<promise>COMPLETE</promise>")
 }
 
 func verifyAgentTaskUpdate(ctx context.Context, queries *sqlc.Queries, projectID int64, runID int64, beforeStatuses map[int64]string) (int64, error) {

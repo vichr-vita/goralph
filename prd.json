@@ -349,7 +349,7 @@
       "Stop on blocked or failed task by default",
       "Support --continue-on-blocked to keep working other tasks"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
