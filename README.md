@@ -1,5 +1,8 @@
 # goralph
 
+[![CI](https://github.com/vichr-vita/goralph/actions/workflows/ci.yml/badge.svg)](https://github.com/vichr-vita/goralph/actions/workflows/ci.yml)
+[![Release](https://github.com/vichr-vita/goralph/actions/workflows/release.yml/badge.svg)](https://github.com/vichr-vita/goralph/actions/workflows/release.yml)
+
 `goralph` runs Ralph implementation loops for Git projects. It stores project state, PRD tasks, progress, and runner sessions in SQLite, then prompts an agent to work one PRD item at a time.
 
 ![goralph demo](assets/goralph.gif)
@@ -54,6 +57,13 @@ Install from this checkout for local changes:
 ```sh
 go install ./cmd/goralph
 goralph --help
+```
+
+GitHub Actions builds release binaries when a `v*` tag is pushed. Create a new release:
+
+```sh
+git tag -a v0.1.1 -m "v0.1.1"
+git push origin v0.1.1
 ```
 
 The default runner command is `pi -p <generated-prompt>`. Use `--config`, user config, or project config when you need a different runner.
