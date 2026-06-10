@@ -1,10 +1,18 @@
 package cli
 
 import (
+	"bufio"
+	"context"
+	"errors"
 	"fmt"
+	"os"
+	"strings"
 
+	"goralph/internal/db"
+	"goralph/internal/db/sqlc"
 	"goralph/internal/prd"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -15,6 +23,7 @@ func newPRDCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(newPRDValidateCommand())
+	cmd.AddCommand(newPRDImportCommand())
 
 	return cmd
 }
@@ -34,10 +43,176 @@ func newPRDValidateCommand() *cobra.Command {
 	}
 }
 
+func newPRDImportCommand() *cobra.Command {
+	var replace bool
+	var appendMode bool
+
+	cmd := &cobra.Command{
+		Use:   "import <file>",
+		Short: "Import PRD tasks into the current project",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if replace && appendMode {
+				return errors.New("--replace and --append cannot be used together")
+			}
+
+			items, err := prd.LoadFile(args[0])
+			if err != nil {
+				return err
+			}
+			project, err := projectFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+			settings, err := settingsFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			mode := importModeDefault
+			if replace {
+				mode = importModeReplace
+			}
+			if appendMode {
+				mode = importModeAppend
+			}
+
+			result, err := importPRDItems(cmd.Context(), settings.DBPath, project.ID, items, mode, cmd)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "imported %d tasks (%s) from %s\n", result.Imported, result.Mode, args[0])
+			return err
+		},
+	}
+	cmd.Flags().BoolVar(&replace, "replace", false, "replace current project tasks before import")
+	cmd.Flags().BoolVar(&appendMode, "append", false, "append imported tasks without deleting current tasks")
+
+	return cmd
+}
+
 func isPRDValidateCommand(cmd *cobra.Command) bool {
 	if cmd == nil || cmd.Name() != "validate" {
 		return false
 	}
 	parent := cmd.Parent()
 	return parent != nil && parent.Name() == "prd"
+}
+
+type importMode string
+
+const (
+	importModeDefault importMode = "default"
+	importModeReplace importMode = "replace"
+	importModeAppend  importMode = "append"
+)
+
+type importResult struct {
+	Imported int
+	Mode     importMode
+}
+
+func importPRDItems(ctx context.Context, dbPath string, projectID int64, items []prd.Item, mode importMode, cmd *cobra.Command) (importResult, error) {
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return importResult{}, fmt.Errorf("open database: %w", err)
+	}
+	defer database.Close()
+
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return importResult{}, fmt.Errorf("begin import transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	queries := sqlc.New(database).WithTx(tx)
+	existing, err := queries.CountTasksByProject(ctx, projectID)
+	if err != nil {
+		return importResult{}, fmt.Errorf("count current tasks: %w", err)
+	}
+
+	if existing > 0 && mode == importModeDefault {
+		if !stdinIsTerminal(cmd) {
+			return importResult{}, errors.New("current project already has tasks; rerun with --replace or --append")
+		}
+		confirmed, err := confirmReplace(cmd, existing)
+		if err != nil {
+			return importResult{}, err
+		}
+		if !confirmed {
+			return importResult{}, errors.New("import cancelled")
+		}
+		mode = importModeReplace
+	}
+
+	if mode == importModeDefault {
+		mode = importModeReplace
+	}
+
+	if existing > 0 && mode == importModeReplace {
+		if err := queries.DeleteTaskStepsByProject(ctx, projectID); err != nil {
+			return importResult{}, fmt.Errorf("delete current task steps: %w", err)
+		}
+		if err := queries.DeleteTasksByProject(ctx, projectID); err != nil {
+			return importResult{}, fmt.Errorf("delete current tasks: %w", err)
+		}
+	}
+
+	for index, item := range items {
+		status := string(db.TaskStatusPending)
+		if item.Passes {
+			status = string(db.TaskStatusPassed)
+		}
+		task, err := queries.CreateTask(ctx, sqlc.CreateTaskParams{
+			ProjectID:   projectID,
+			Category:    item.Category,
+			Description: item.Description,
+			Status:      status,
+		})
+		if err != nil {
+			return importResult{}, fmt.Errorf("insert task %d: %w", index, err)
+		}
+		for stepIndex, step := range item.Steps {
+			if _, err := queries.CreateTaskStep(ctx, sqlc.CreateTaskStepParams{
+				TaskID:      task.ID,
+				Position:    int64(stepIndex + 1),
+				Description: step,
+			}); err != nil {
+				return importResult{}, fmt.Errorf("insert task %d step %d: %w", index, stepIndex, err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return importResult{}, fmt.Errorf("commit PRD import: %w", err)
+	}
+	committed = true
+
+	return importResult{Imported: len(items), Mode: mode}, nil
+}
+
+func stdinIsTerminal(cmd *cobra.Command) bool {
+	file, ok := cmd.InOrStdin().(*os.File)
+	if !ok {
+		return false
+	}
+	fd := file.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+}
+
+func confirmReplace(cmd *cobra.Command, existing int64) (bool, error) {
+	if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "current project has %d tasks; replace them? [Y/n] ", existing); err != nil {
+		return false, err
+	}
+	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		return false, fmt.Errorf("read confirmation: %w", err)
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "" || answer == "y" || answer == "yes", nil
 }

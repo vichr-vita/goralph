@@ -9,6 +9,17 @@ import (
 	"context"
 )
 
+const countTasksByProject = `-- name: CountTasksByProject :one
+SELECT COUNT(*) FROM task WHERE project_id = ?
+`
+
+func (q *Queries) CountTasksByProject(ctx context.Context, projectID int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTasksByProject, projectID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createProject = `-- name: CreateProject :one
 INSERT INTO project (name, root_path)
 VALUES (?, ?)
@@ -32,6 +43,85 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const createTask = `-- name: CreateTask :one
+INSERT INTO task (project_id, category, description, status)
+VALUES (?, ?, ?, ?)
+RETURNING id, project_id, category, description, status, progress_report, created_at, updated_at
+`
+
+type CreateTaskParams struct {
+	ProjectID   int64
+	Category    string
+	Description string
+	Status      string
+}
+
+func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
+	row := q.db.QueryRowContext(ctx, createTask,
+		arg.ProjectID,
+		arg.Category,
+		arg.Description,
+		arg.Status,
+	)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Category,
+		&i.Description,
+		&i.Status,
+		&i.ProgressReport,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createTaskStep = `-- name: CreateTaskStep :one
+INSERT INTO task_step (task_id, position, description)
+VALUES (?, ?, ?)
+RETURNING id, task_id, position, description, created_at, updated_at
+`
+
+type CreateTaskStepParams struct {
+	TaskID      int64
+	Position    int64
+	Description string
+}
+
+func (q *Queries) CreateTaskStep(ctx context.Context, arg CreateTaskStepParams) (TaskStep, error) {
+	row := q.db.QueryRowContext(ctx, createTaskStep, arg.TaskID, arg.Position, arg.Description)
+	var i TaskStep
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.Position,
+		&i.Description,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const deleteTaskStepsByProject = `-- name: DeleteTaskStepsByProject :exec
+DELETE FROM task_step
+WHERE task_id IN (SELECT id FROM task WHERE project_id = ?)
+`
+
+func (q *Queries) DeleteTaskStepsByProject(ctx context.Context, projectID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteTaskStepsByProject, projectID)
+	return err
+}
+
+const deleteTasksByProject = `-- name: DeleteTasksByProject :exec
+DELETE FROM task WHERE project_id = ?
+`
+
+func (q *Queries) DeleteTasksByProject(ctx context.Context, projectID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteTasksByProject, projectID)
+	return err
 }
 
 const getProjectByRootPath = `-- name: GetProjectByRootPath :one

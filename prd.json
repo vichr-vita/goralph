@@ -154,7 +154,7 @@
       "Support --append to add imported tasks without deleting existing tasks",
       "Assign stable task IDs from the database, not from JSON"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "cli",

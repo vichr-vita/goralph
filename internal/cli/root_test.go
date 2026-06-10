@@ -260,6 +260,127 @@ func TestPRDValidateCommandValidatesFileWithoutGitRoot(t *testing.T) {
 	}
 }
 
+func TestPRDImportInsertsTasksAndSteps(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	prdPath := writePRDFile(t, `[
+		{"category":"cli","description":"pending task","steps":["one","two"],"passes":false},
+		{"category":"db","description":"passed task","steps":["done"],"passes":true}
+	]`)
+
+	stdout := &bytes.Buffer{}
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "imported 2 tasks (replace)") {
+		t.Fatalf("prd import output = %q, want import count", stdout.String())
+	}
+
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 2 {
+		t.Fatalf("task count = %d, want 2", len(tasks))
+	}
+	if tasks[0].description != "pending task" || tasks[0].status != "pending" || tasks[0].steps != "one,two" {
+		t.Fatalf("first task = %+v, want pending task with steps", tasks[0])
+	}
+	if tasks[1].description != "passed task" || tasks[1].status != "passed" || tasks[1].steps != "done" {
+		t.Fatalf("second task = %+v, want passed task", tasks[1])
+	}
+}
+
+func TestPRDImportExistingTasksNeedExplicitNonInteractiveMode(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	firstPath := writePRDFile(t, `[{"category":"cli","description":"first","steps":["one"],"passes":false}]`)
+	secondPath := writePRDFile(t, `[{"category":"cli","description":"second","steps":["two"],"passes":false}]`)
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", firstPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute first prd import: %v", err)
+	}
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", secondPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("execute second prd import succeeded, want explicit mode error")
+	}
+	if !strings.Contains(err.Error(), "--replace or --append") {
+		t.Fatalf("second prd import error = %q, want explicit mode hint", err.Error())
+	}
+
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 || tasks[0].description != "first" {
+		t.Fatalf("tasks after refused import = %+v, want first task only", tasks)
+	}
+}
+
+func TestPRDImportReplaceAndAppendModes(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	firstPath := writePRDFile(t, `[{"category":"cli","description":"first","steps":["one"],"passes":false}]`)
+	replacePath := writePRDFile(t, `[{"category":"cli","description":"replacement","steps":["two"],"passes":false}]`)
+	appendPath := writePRDFile(t, `[{"category":"cli","description":"appended","steps":["three"],"passes":false}]`)
+
+	for _, args := range [][]string{
+		{"--db", dbPath, "prd", "import", firstPath},
+		{"--db", dbPath, "prd", "import", "--replace", replacePath},
+		{"--db", dbPath, "prd", "import", "--append", appendPath},
+	} {
+		cmd := NewRootCommand()
+		cmd.SetArgs(args)
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("execute %v: %v", args, err)
+		}
+	}
+
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 2 {
+		t.Fatalf("task count = %d, want 2", len(tasks))
+	}
+	if tasks[0].description != "replacement" || tasks[1].description != "appended" {
+		t.Fatalf("tasks = %+v, want replacement then appended", tasks)
+	}
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", "--replace", "--append", appendPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+		t.Fatalf("replace+append error = %v, want conflict", err)
+	}
+}
+
 func TestDBPathPrintsResolvedDatabasePath(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -361,6 +482,65 @@ func TestDBResetForceRecreatesMigratedDatabase(t *testing.T) {
 	}
 	assertGooseVersionRecorded(t, dbPath)
 	assertTableMissing(t, dbPath, "stale")
+}
+
+type importedTaskRow struct {
+	id          int64
+	description string
+	status      string
+	steps       string
+}
+
+func writePRDFile(t *testing.T, content string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "prd.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write PRD: %v", err)
+	}
+	return path
+}
+
+func fetchImportedTasks(t *testing.T, dbPath string, rootPath string) []importedTaskRow {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	rows, err := database.Query(`
+		SELECT t.id, t.description, t.status, COALESCE((
+			SELECT group_concat(description, ',')
+			FROM (
+				SELECT description
+				FROM task_step
+				WHERE task_id = t.id
+				ORDER BY position
+			)
+		), '') AS steps
+		FROM task t
+		JOIN project p ON p.id = t.project_id
+		WHERE p.root_path = ?
+		ORDER BY t.id`, rootPath)
+	if err != nil {
+		t.Fatalf("query tasks: %v", err)
+	}
+	defer rows.Close()
+
+	var tasks []importedTaskRow
+	for rows.Next() {
+		var task importedTaskRow
+		if err := rows.Scan(&task.id, &task.description, &task.status, &task.steps); err != nil {
+			t.Fatalf("scan task: %v", err)
+		}
+		tasks = append(tasks, task)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate tasks: %v", err)
+	}
+	return tasks
 }
 
 func createTestGitWorkDir(t *testing.T, repoName string) (string, string) {

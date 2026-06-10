@@ -19,44 +19,58 @@ var allowedFields = map[string]struct{}{
 
 // ValidateFile validates a PRD JSON array file using the strict import schema.
 func ValidateFile(path string) error {
+	_, err := LoadFile(path)
+	return err
+}
+
+// LoadFile loads and validates a PRD JSON array file using the strict import schema.
+func LoadFile(path string) ([]Item, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read PRD file: %w", err)
+		return nil, fmt.Errorf("read PRD file: %w", err)
 	}
-	return Validate(data)
+	return Parse(data)
 }
 
 // Validate validates PRD JSON array bytes using the strict import schema.
 func Validate(data []byte) error {
+	_, err := Parse(data)
+	return err
+}
+
+// Parse validates PRD JSON array bytes and returns importable items.
+func Parse(data []byte) ([]Item, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 
-	var items []map[string]json.RawMessage
-	if err := decoder.Decode(&items); err != nil {
-		return fmt.Errorf("decode PRD JSON array: %w", err)
+	var rawItems []map[string]json.RawMessage
+	if err := decoder.Decode(&rawItems); err != nil {
+		return nil, fmt.Errorf("decode PRD JSON array: %w", err)
 	}
 	if err := ensureNoTrailingJSON(decoder); err != nil {
-		return err
+		return nil, err
 	}
 
-	seenDescriptions := make(map[string]int, len(items))
-	for index, raw := range items {
+	items := make([]Item, 0, len(rawItems))
+	seenDescriptions := make(map[string]int, len(rawItems))
+	for index, raw := range rawItems {
 		if raw == nil {
-			return fmt.Errorf("item %d must be an object", index)
+			return nil, fmt.Errorf("item %d must be an object", index)
 		}
 		item, err := validateItem(index, raw)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		descriptionKey := strings.TrimSpace(item.Description)
 		if previous, ok := seenDescriptions[descriptionKey]; ok {
-			return fmt.Errorf("item %d duplicates description from item %d: %q", index, previous, item.Description)
+			return nil, fmt.Errorf("item %d duplicates description from item %d: %q", index, previous, item.Description)
 		}
 		seenDescriptions[descriptionKey] = index
+		items = append(items, item)
 	}
 
-	return nil
+	return items, nil
 }
 
 func ensureNoTrailingJSON(decoder *json.Decoder) error {

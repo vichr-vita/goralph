@@ -10,3 +10,4 @@
 2026-06-10: Implemented project info/init commands with human and JSON output, updating auto-created project rows. Checks: sqlc generate, gofmt, go test ./... passed.
 2026-06-10: Implemented layered config loading for XDG user config and .ralph project config, project overrides, runner/feedback settings, and DB path precedence via flag/env/config. Checks: gofmt, go test ./... passed.
 2026-06-10: Implemented strict PRD JSON array validation command; go test ./... passed.
+2026-06-10T14:30:09Z - Implemented PRD import replace-by-default, --replace, --append; verified gofmt/sqlc/go test/CLI checks.
