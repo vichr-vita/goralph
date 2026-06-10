@@ -2,6 +2,8 @@
 
 `goralph` runs Ralph implementation loops for Git projects. It stores project state, PRD tasks, progress, and runner sessions in SQLite, then prompts an agent to work one PRD item at a time.
 
+![goralph demo](assets/goralph.gif)
+
 ## Install or build
 
 From this repository:
