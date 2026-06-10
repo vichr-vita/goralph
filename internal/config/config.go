@@ -38,7 +38,7 @@ type Settings struct {
 
 // Load reads goralph configuration from an explicit path, user config, project config, and environment.
 func Load(cfgFile string, dbPath string) (*Settings, error) {
-	v := viper.GetViper()
+	v := viper.New()
 	configureViper(v)
 
 	if cfgFile != "" {
@@ -70,19 +70,17 @@ func Load(cfgFile string, dbPath string) (*Settings, error) {
 	runnerCommand := resolveRunnerCommand(v)
 	runnerArgs := resolveRunnerArgs(v)
 
-	v.Set("db", resolvedDBPath)
-	v.Set(runnerCommandKey, runnerCommand)
-	v.Set(runnerArgsKey, runnerArgs)
-	v.Set("runner", runnerCommand)
-	v.Set(feedbackCommandsKey, feedbackCommands(v))
+	feedback := feedbackCommands(v)
 
-	return &Settings{
+	settings := &Settings{
 		DBPath:           resolvedDBPath,
 		Runner:           runnerCommand,
 		RunnerCommand:    runnerCommand,
 		RunnerArgs:       runnerArgs,
-		FeedbackCommands: v.GetStringSlice(feedbackCommandsKey),
-	}, nil
+		FeedbackCommands: feedback,
+	}
+	publishResolvedSettings(settings)
+	return settings, nil
 }
 
 // ResolveDatabasePath returns the SQLite database path and creates its parent directory.
@@ -119,6 +117,16 @@ func configureViper(v *viper.Viper) {
 	v.AutomaticEnv()
 }
 
+func publishResolvedSettings(settings *Settings) {
+	v := viper.GetViper()
+	configureViper(v)
+	v.Set("db", settings.DBPath)
+	v.Set(runnerCommandKey, settings.RunnerCommand)
+	v.Set(runnerArgsKey, settings.RunnerArgs)
+	v.Set("runner", settings.Runner)
+	v.Set(feedbackCommandsKey, settings.FeedbackCommands)
+}
+
 func mergeConfigFile(v *viper.Viper, path string) error {
 	v.SetConfigFile(path)
 	return v.MergeInConfig()
@@ -139,6 +147,9 @@ func mergeOptionalConfigFile(v *viper.Viper, path string) error {
 }
 
 func xdgConfigPath() string {
+	if configHome := os.Getenv("XDG_CONFIG_HOME"); configHome != "" {
+		return filepath.Join(configHome, configDir, configFile)
+	}
 	configHome, err := os.UserConfigDir()
 	if err != nil || configHome == "" {
 		return ""

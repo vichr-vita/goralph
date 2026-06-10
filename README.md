@@ -9,9 +9,9 @@
 From this repository:
 
 ```sh
-go test ./...
-go build -o ./bin/goralph ./cmd/goralph
-./bin/goralph --help
+make test
+make build
+./target/goralph --help
 ```
 
 To install into your Go bin directory:
@@ -60,7 +60,7 @@ go run ./cmd/goralph --db .ralph/dev.db db reset --force
 Baseline verification before committing:
 
 ```sh
-go test ./...
+make test
 ```
 
 Automated tests must not invoke real Pi. Use fake runner seams, temp configs, or runner command overrides for tests that exercise run flows.

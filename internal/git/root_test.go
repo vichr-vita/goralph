@@ -25,6 +25,7 @@ func TestFindRootReturnsNearestGitRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("find root: %v", err)
 	}
+	inner = canonicalTestPath(t, inner)
 	if got != inner {
 		t.Fatalf("root = %q, want %q", got, inner)
 	}
@@ -44,6 +45,7 @@ func TestFindRootAcceptsGitFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("find root: %v", err)
 	}
+	root = canonicalTestPath(t, root)
 	if got != root {
 		t.Fatalf("root = %q, want %q", got, root)
 	}
@@ -54,4 +56,13 @@ func TestFindRootReportsMissingGitRoot(t *testing.T) {
 	if !errors.Is(err, ErrRootNotFound) {
 		t.Fatalf("error = %v, want %v", err, ErrRootNotFound)
 	}
+}
+
+func canonicalTestPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", path, err)
+	}
+	return resolved
 }

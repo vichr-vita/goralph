@@ -30,7 +30,7 @@ func FindRoot(start string) (string, error) {
 
 	for {
 		if isGitRoot(current) {
-			return current, nil
+			return canonicalPath(current), nil
 		}
 
 		parent := filepath.Dir(current)
@@ -39,6 +39,14 @@ func FindRoot(start string) (string, error) {
 		}
 		current = parent
 	}
+}
+
+func canonicalPath(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path
+	}
+	return resolved
 }
 
 func isGitRoot(path string) bool {

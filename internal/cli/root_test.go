@@ -282,6 +282,9 @@ func TestRootCommandAutoCreatesCurrentProject(t *testing.T) {
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		t.Fatalf("create work dir: %v", err)
 	}
+	if resolved, err := filepath.EvalSymlinks(repoRoot); err == nil {
+		repoRoot = resolved
+	}
 	chdir(t, workDir)
 
 	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
@@ -3012,6 +3015,9 @@ func createTestGitWorkDir(t *testing.T, repoName string) (string, string) {
 	cmd := exec.Command("git", "init", "--quiet", repoRoot)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("init git repo: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	if resolved, err := filepath.EvalSymlinks(repoRoot); err == nil {
+		repoRoot = resolved
 	}
 	return repoRoot, workDir
 }
