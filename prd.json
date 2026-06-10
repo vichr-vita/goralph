@@ -566,7 +566,7 @@
       "Test --force marks stale runs failed before starting a new run",
       "Test cross-host stale recovery requires force"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "documentation",

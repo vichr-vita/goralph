@@ -39,3 +39,4 @@ Implemented run one --task targeting with current-project validation and forced-
 2026-06-10: Added CLI command tests using temp GO_RALPH_DB, isolated config, temp git repos, JSON shape checks, and non-TTY destructive guards.
 2026-06-10: added fake runner seam and fake-runner run one/all tests; PRD item passed.
 testing/Add git safety tests: added temp git repo safety coverage for dirty pre-run, allow-dirty bypass, dirty post-run failure, clean committed post-run success.
+2026-06-10 Add concurrency/stale run tests; go test ./... passes.

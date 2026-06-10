@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -145,6 +146,24 @@ func setTaskStatus(t *testing.T, dbPath string, taskID int64, status string) {
 	}
 }
 
+func assertRunFailedWithExitError(t *testing.T, dbPath string, runID int64, wantExitError string) {
+	t.Helper()
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	var status string
+	var exitError sql.NullString
+	if err := database.QueryRow("SELECT status, exit_error FROM run WHERE id = ?", runID).Scan(&status, &exitError); err != nil {
+		t.Fatalf("query run %d: %v", runID, err)
+	}
+	if status != "failed" || !exitError.Valid || !strings.Contains(exitError.String, wantExitError) {
+		t.Fatalf("run %d status=%q exit_error=%v, want failed containing %q", runID, status, exitError, wantExitError)
+	}
+}
+
 func assertTaskStatuses(t *testing.T, dbPath string, repoRoot string, want ...string) {
 	t.Helper()
 	tasks := fetchImportedTasks(t, dbPath, repoRoot)
@@ -215,6 +234,98 @@ func TestFakeRunnerRunOneTaskFlagForcesSpecifiedTask(t *testing.T) {
 		t.Fatalf("fake runner turns = %d, want 1", got)
 	}
 	assertTaskStatuses(t, dbPath, repoRoot, "pending", "passed")
+}
+
+func TestFakeRunnerRunOneRejectsActiveRunInSameProject(t *testing.T) {
+	dbPath, repoRoot := setupFakeRunnerProject(t, `[
+		{"category":"runner","description":"guard same project","steps":["one"],"passes":false}
+	]`)
+	taskID := fetchImportedTasks(t, dbPath, repoRoot)[0].id
+	activeRunID := seedActiveRun(t, dbPath, repoRoot, taskID)
+	turns := installFakeAgentRunner(t, func(_ context.Context, _ runner.Request, _ int) (runner.Result, error) {
+		t.Fatal("runner executed despite active run")
+		return runner.Result{}, nil
+	})
+
+	_, err := executeRunCommand(t, dbPath, "run", "--quiet", "one")
+	wantRun := "run " + strconv.FormatInt(activeRunID, 10)
+	for _, want := range []string{"active run exists", wantRun, "goralph run show"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("run one active error = %v, want %q", err, want)
+		}
+	}
+	if got := atomic.LoadInt32(turns); got != 0 {
+		t.Fatalf("fake runner turns = %d, want 0", got)
+	}
+	assertRunCount(t, dbPath, 1)
+}
+
+func TestFakeRunnerRunOneRecoversStaleSameHostOldHeartbeatWithForce(t *testing.T) {
+	dbPath, repoRoot := setupFakeRunnerProject(t, `[
+		{"category":"runner","description":"old heartbeat","steps":["one"],"passes":false}
+	]`)
+	taskID := fetchImportedTasks(t, dbPath, repoRoot)[0].id
+	host, _ := os.Hostname()
+	oldHeartbeat := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	staleRunID := seedActiveRunWithMetadata(t, dbPath, repoRoot, taskID, 0, host, oldHeartbeat)
+	turns := installFakeAgentRunner(t, func(_ context.Context, _ runner.Request, _ int) (runner.Result, error) {
+		fakePassTask(t, dbPath, taskID)
+		return runner.Result{}, nil
+	})
+
+	_, err := executeRunCommand(t, dbPath, "run", "--stale-after", "1h", "one")
+	if err == nil || !strings.Contains(err.Error(), "stale active run requires --force") || !strings.Contains(err.Error(), "heartbeat older than 1h0m0s") {
+		t.Fatalf("run one old heartbeat error = %v, want force-required heartbeat error", err)
+	}
+	assertRunCount(t, dbPath, 1)
+
+	stdout, err := executeRunCommand(t, dbPath, "run", "--stale-after", "1h", "--force", "--quiet", "one")
+	if err != nil {
+		t.Fatalf("execute run one --force old heartbeat: %v", err)
+	}
+	if !strings.Contains(stdout, "Status: succeeded") {
+		t.Fatalf("run output = %q, want succeeded", stdout)
+	}
+	if got := atomic.LoadInt32(turns); got != 1 {
+		t.Fatalf("fake runner turns = %d, want 1", got)
+	}
+	assertRunCount(t, dbPath, 2)
+	assertRunFailedWithExitError(t, dbPath, staleRunID, "stale active run recovered with --force: heartbeat older than 1h0m0s")
+}
+
+func TestFakeRunnerRunOneCrossHostStaleHeartbeatRequiresForce(t *testing.T) {
+	dbPath, repoRoot := setupFakeRunnerProject(t, `[
+		{"category":"runner","description":"cross host stale","steps":["one"],"passes":false}
+	]`)
+	taskID := fetchImportedTasks(t, dbPath, repoRoot)[0].id
+	oldHeartbeat := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	staleRunID := seedActiveRunWithMetadata(t, dbPath, repoRoot, taskID, 0, "other-host", oldHeartbeat)
+	turns := installFakeAgentRunner(t, func(_ context.Context, _ runner.Request, _ int) (runner.Result, error) {
+		fakePassTask(t, dbPath, taskID)
+		return runner.Result{}, nil
+	})
+
+	_, err := executeRunCommand(t, dbPath, "run", "--stale-after", "1h", "one")
+	if err == nil || !strings.Contains(err.Error(), "stale active run requires --force") || !strings.Contains(err.Error(), "cross-host") {
+		t.Fatalf("run one cross-host stale error = %v, want force-required cross-host error", err)
+	}
+	if got := atomic.LoadInt32(turns); got != 0 {
+		t.Fatalf("fake runner turns = %d, want 0", got)
+	}
+	assertRunCount(t, dbPath, 1)
+
+	stdout, err := executeRunCommand(t, dbPath, "run", "--stale-after", "1h", "--force", "--quiet", "one")
+	if err != nil {
+		t.Fatalf("execute run one --force cross-host stale: %v", err)
+	}
+	if !strings.Contains(stdout, "Status: succeeded") {
+		t.Fatalf("run output = %q, want succeeded", stdout)
+	}
+	if got := atomic.LoadInt32(turns); got != 1 {
+		t.Fatalf("fake runner turns = %d, want 1", got)
+	}
+	assertRunCount(t, dbPath, 2)
+	assertRunFailedWithExitError(t, dbPath, staleRunID, "stale active run recovered with --force: cross-host heartbeat from other-host older than 1h0m0s")
 }
 
 func TestFakeRunnerRunAllStopsOnAllPassed(t *testing.T) {
