@@ -1070,6 +1070,71 @@ func TestRunOneTaskFlagRejectsUnknownOrOtherProjectTask(t *testing.T) {
 	}
 }
 
+func TestRunAllTaskFlagIsRejected(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	_, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	markerPath := filepath.Join(tempDir, "runner-ran.txt")
+	runnerPath := filepath.Join(tempDir, "should-not-run.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nprintf ran > "+strconv.Quote(markerPath)+"\nexit 99\n"), 0o700); err != nil {
+		t.Fatalf("write runner: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	viper.Reset()
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "all", "--task", "1"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--task is only supported for `goralph run one`") {
+		t.Fatalf("run all --task error = %v, want unsupported task override", err)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runner marker err = %v, want runner not executed", err)
+	}
+	assertRunCount(t, dbPath, 0)
+}
+
+func TestRunHelpDocumentsTaskScope(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	stdout := &bytes.Buffer{}
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"run", "one", "--help"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run one help: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "only supported by run one") {
+		t.Fatalf("run one help = %q, want --task scope", stdout.String())
+	}
+
+	stdout.Reset()
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"run", "all", "--help"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run all help: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "use `goralph run one --task <id>`") {
+		t.Fatalf("run all help = %q, want run one --task guidance", stdout.String())
+	}
+}
+
 func TestRunOneReportsNoEligibleTasks(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)

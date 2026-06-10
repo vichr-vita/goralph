@@ -360,7 +360,7 @@
       "Return the validation error exit outcome",
       "Document that --task is only supported for run one"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

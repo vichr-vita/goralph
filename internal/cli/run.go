@@ -51,6 +51,7 @@ func newRunCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Inspect runner sessions",
+		Long:  "Inspect runner sessions. Use `goralph run one --task <id>` to target a specific task; --task is not supported by run all.",
 	}
 	cmd.PersistentFlags().BoolVar(&quiet, "quiet", false, "suppress live runner output")
 	cmd.PersistentFlags().BoolVar(&allowDirty, "allow-dirty", false, "run agents without requiring a clean git worktree")
@@ -101,18 +102,23 @@ func newRunOneCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 			return writeRun(cmd, run)
 		},
 	}
-	cmd.Flags().Int64Var(&taskID, "task", 0, "target task id")
+	cmd.Flags().Int64Var(&taskID, "task", 0, "target task id (only supported by run one)")
 	return cmd
 }
 
 func newRunAllCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 	var continueOnBlocked bool
 	var maxTurns int
+	var unsupportedTaskID string
 
 	cmd := &cobra.Command{
 		Use:   "all",
 		Short: "Run eligible task turns until none remain",
+		Long:  "Run eligible task turns until none remain. Task overrides are not supported; use `goralph run one --task <id>` to target a specific task.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("task") {
+				return fmt.Errorf("--task is only supported for `goralph run one`; run all selects eligible tasks automatically")
+			}
 			if maxTurns < 0 {
 				return fmt.Errorf("invalid max turns %d", maxTurns)
 			}
@@ -181,6 +187,8 @@ func newRunAllCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&continueOnBlocked, "continue-on-blocked", false, "continue running pending tasks when blocked or failed tasks exist")
 	cmd.Flags().IntVar(&maxTurns, "max-turns", 0, "maximum agent turns to run (0 means unlimited)")
+	cmd.Flags().StringVar(&unsupportedTaskID, "task", "", "target task id (only supported by run one)")
+	_ = cmd.Flags().MarkHidden("task")
 	return cmd
 }
 
