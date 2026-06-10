@@ -62,6 +62,7 @@ CREATE TABLE run (
 CREATE INDEX idx_run_project_id ON run (project_id);
 CREATE INDEX idx_run_task_id ON run (task_id);
 CREATE INDEX idx_run_status ON run (status);
+CREATE UNIQUE INDEX idx_run_one_active_per_project ON run (project_id) WHERE status = 'running';
 
 CREATE TABLE progress (
     id INTEGER PRIMARY KEY,

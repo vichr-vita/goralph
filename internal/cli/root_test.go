@@ -1135,6 +1135,99 @@ func TestRunHelpDocumentsTaskScope(t *testing.T) {
 	}
 }
 
+func TestRunOneRejectsExistingActiveRun(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	markerPath := filepath.Join(tempDir, "runner-ran.txt")
+	runnerPath := filepath.Join(tempDir, "should-not-run.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nprintf ran > "+strconv.Quote(markerPath)+"\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write runner: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"guard me","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	activeRunID := seedActiveRun(t, dbPath, repoRoot, tasks[0].id)
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "one"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	wantRun := "run " + strconv.FormatInt(activeRunID, 10)
+	for _, want := range []string{"active run exists", wantRun, "pid 4242", "host test-host", "heartbeat 2026-06-10T00:00:00Z", "goralph run show"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("run one active error = %v, want %q", err, want)
+		}
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runner marker err = %v, want runner not executed", err)
+	}
+	assertRunCount(t, dbPath, 1)
+}
+
+func TestRunAllRejectsExistingActiveRun(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	markerPath := filepath.Join(tempDir, "runner-ran.txt")
+	runnerPath := filepath.Join(tempDir, "should-not-run.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nprintf ran > "+strconv.Quote(markerPath)+"\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write runner: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"guard me","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	seedActiveRun(t, dbPath, repoRoot, tasks[0].id)
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "all"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "active run exists") || !strings.Contains(err.Error(), "goralph run show") {
+		t.Fatalf("run all active error = %v, want active run error", err)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runner marker err = %v, want runner not executed", err)
+	}
+	assertRunCount(t, dbPath, 1)
+}
+
 func TestRunOneReportsNoEligibleTasks(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -2107,7 +2200,7 @@ func seedActiveRun(t *testing.T, dbPath string, rootPath string, taskID int64) i
 	if err := database.QueryRow("SELECT id FROM project WHERE root_path = ?", rootPath).Scan(&projectID); err != nil {
 		t.Fatalf("query project id: %v", err)
 	}
-	result, err := database.Exec("INSERT INTO run (project_id, task_id, runner_name, status, started_at) VALUES (?, ?, 'test-runner', 'running', CURRENT_TIMESTAMP)", projectID, taskID)
+	result, err := database.Exec("INSERT INTO run (project_id, task_id, runner_name, status, pid, host, heartbeat_at, started_at) VALUES (?, ?, 'test-runner', 'running', 4242, 'test-host', '2026-06-10T00:00:00Z', CURRENT_TIMESTAMP)", projectID, taskID)
 	if err != nil {
 		t.Fatalf("insert active run: %v", err)
 	}

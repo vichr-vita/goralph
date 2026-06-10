@@ -408,7 +408,7 @@
       "Return the active run exists exit outcome",
       "Expose enough information for the user to inspect the active run"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "safety",

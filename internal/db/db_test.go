@@ -98,6 +98,36 @@ func TestMigrateFreshDatabaseEnforcesTaskStatusEnum(t *testing.T) {
 	}
 }
 
+func TestMigrateFreshDatabaseAllowsOnlyOneActiveRunPerProject(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "ralph.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	if err := Migrate(context.Background(), database); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	result, err := database.Exec("INSERT INTO project (name, root_path) VALUES (?, ?)", "test", t.TempDir())
+	if err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	projectID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("project id: %v", err)
+	}
+
+	if _, err := database.Exec("INSERT INTO run (project_id, runner_name, status) VALUES (?, 'pi', 'running')", projectID); err != nil {
+		t.Fatalf("insert first active run: %v", err)
+	}
+	if _, err := database.Exec("INSERT INTO run (project_id, runner_name, status) VALUES (?, 'pi', 'running')", projectID); err == nil {
+		t.Fatalf("insert second active run succeeded, want unique constraint error")
+	}
+	if _, err := database.Exec("INSERT INTO run (project_id, runner_name, status) VALUES (?, 'pi', 'failed')", projectID); err != nil {
+		t.Fatalf("insert finished run beside active run: %v", err)
+	}
+}
+
 func TestMigrateFreshDatabaseCreatesNormalizedTables(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "ralph.db"))
 	if err != nil {

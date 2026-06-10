@@ -79,6 +79,9 @@ func newRunOneCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := requireNoActiveRun(cmd.Context(), settings.DBPath, project.ID); err != nil {
+				return err
+			}
 			if err := requireCleanWorktreeBeforeAgent(cmd.Context(), project, *allowDirty); err != nil {
 				return err
 			}
@@ -128,6 +131,9 @@ func newRunAllCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 			}
 			settings, err := settingsFromContext(cmd.Context())
 			if err != nil {
+				return err
+			}
+			if err := requireNoActiveRun(cmd.Context(), settings.DBPath, project.ID); err != nil {
 				return err
 			}
 			if err := requireCleanWorktreeBeforeAgent(cmd.Context(), project, *allowDirty); err != nil {
@@ -193,6 +199,42 @@ func newRunAllCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 	return cmd
 }
 
+type activeRunExistsError struct {
+	run runOutput
+}
+
+func (e *activeRunExistsError) Error() string {
+	task := "none"
+	if e.run.TaskID != nil {
+		task = strconv.FormatInt(*e.run.TaskID, 10)
+	}
+	pid := "none"
+	if e.run.PID != nil {
+		pid = strconv.FormatInt(*e.run.PID, 10)
+	}
+	return fmt.Sprintf("active run exists for project: run %d task %s pid %s host %s heartbeat %s; inspect with `goralph run show %d`", e.run.ID, task, pid, emptyValue(e.run.Host), emptyValue(e.run.HeartbeatAt), e.run.ID)
+}
+
+func requireNoActiveRun(ctx context.Context, dbPath string, projectID int64) error {
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer database.Close()
+	return requireNoActiveRunWithQueries(ctx, sqlc.New(database), projectID)
+}
+
+func requireNoActiveRunWithQueries(ctx context.Context, queries *sqlc.Queries, projectID int64) error {
+	activeRun, err := queries.GetActiveRunByProject(ctx, projectID)
+	if err == nil {
+		return &activeRunExistsError{run: runOutputFromRow(activeRun)}
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	return fmt.Errorf("load active run: %w", err)
+}
+
 func requireCleanWorktreeBeforeAgent(ctx context.Context, project sqlc.Project, allowDirty bool) error {
 	if allowDirty {
 		return nil
@@ -208,6 +250,9 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 	defer database.Close()
 
 	queries := sqlc.New(database)
+	if err := requireNoActiveRunWithQueries(ctx, queries, project.ID); err != nil {
+		return runOutput{}, false, false, err
+	}
 	promptContract := loop.PromptContract{
 		ProjectName:      project.Name,
 		ProjectRootPath:  project.RootPath,
