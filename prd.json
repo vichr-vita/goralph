@@ -468,7 +468,7 @@
       "Write errors to stderr",
       "Avoid human text on stdout in JSON mode"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "cli",

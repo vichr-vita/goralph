@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +22,12 @@ type feedbackOutput struct {
 	Command   string `json:"command"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+}
+
+type feedbackRunOutput struct {
+	Name    string `json:"name"`
+	Command string `json:"command"`
+	OK      bool   `json:"ok"`
 }
 
 func newFeedbackCommand() *cobra.Command {
@@ -123,12 +128,22 @@ func newFeedbackRunCommand() *cobra.Command {
 					return err
 				}
 				if len(commands) == 0 {
+					if jsonOutputFromContext(cmd.Context()) {
+						return writeJSON(cmd, []feedbackRunOutput{})
+					}
 					_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No feedback commands")
 					return printErr
 				}
 			}
 
-			return runFeedbackCommands(cmd.Context(), project.RootPath, commands, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			results, err := runFeedbackCommands(cmd.Context(), project.RootPath, commands, jsonModeWriter(cmd, cmd.OutOrStdout()), cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+			if jsonOutputFromContext(cmd.Context()) {
+				return writeJSON(cmd, results)
+			}
+			return nil
 		},
 	}
 }
@@ -178,11 +193,12 @@ func upsertFeedbackCommand(ctx context.Context, dbPath string, projectID int64, 
 	return feedback, nil
 }
 
-func runFeedbackCommands(ctx context.Context, rootPath string, commands []sqlc.FeedbackCommand, stdout io.Writer, stderr io.Writer) error {
+func runFeedbackCommands(ctx context.Context, rootPath string, commands []sqlc.FeedbackCommand, stdout io.Writer, stderr io.Writer) ([]feedbackRunOutput, error) {
+	results := make([]feedbackRunOutput, 0, len(commands))
 	for _, feedback := range commands {
 		if stderr != nil {
 			if _, err := fmt.Fprintf(stderr, "Running feedback %s: %s\n", feedback.Name, feedback.Command); err != nil {
-				return err
+				return results, err
 			}
 		}
 		command := exec.CommandContext(ctx, "sh", "-c", feedback.Command)
@@ -190,10 +206,11 @@ func runFeedbackCommands(ctx context.Context, rootPath string, commands []sqlc.F
 		command.Stdout = stdout
 		command.Stderr = stderr
 		if err := command.Run(); err != nil {
-			return fmt.Errorf("feedback %q failed: %w", feedback.Name, err)
+			return results, fmt.Errorf("feedback %q failed: %w", feedback.Name, err)
 		}
+		results = append(results, feedbackRunOutput{Name: feedback.Name, Command: feedback.Command, OK: true})
 	}
-	return nil
+	return results, nil
 }
 
 func feedbackOutputFromRow(row sqlc.FeedbackCommand) feedbackOutput {
@@ -213,9 +230,7 @@ func writeFeedbackList(cmd *cobra.Command, commands []sqlc.FeedbackCommand) erro
 		for _, command := range commands {
 			out = append(out, feedbackOutputFromRow(command))
 		}
-		encoder := json.NewEncoder(cmd.OutOrStdout())
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(out)
+		return writeJSON(cmd, out)
 	}
 	if len(commands) == 0 {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), "No feedback commands")
@@ -235,9 +250,7 @@ func writeFeedbackList(cmd *cobra.Command, commands []sqlc.FeedbackCommand) erro
 func writeFeedback(cmd *cobra.Command, command sqlc.FeedbackCommand) error {
 	out := feedbackOutputFromRow(command)
 	if jsonOutputFromContext(cmd.Context()) {
-		encoder := json.NewEncoder(cmd.OutOrStdout())
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(out)
+		return writeJSON(cmd, out)
 	}
 	_, err := fmt.Fprintf(cmd.OutOrStdout(), "Feedback command\n  Name: %s\n  Command: %s\n", out.Name, out.Command)
 	return err

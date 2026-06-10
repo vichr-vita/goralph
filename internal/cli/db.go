@@ -33,6 +33,9 @@ func newDBPathCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if jsonOutputFromContext(cmd.Context()) {
+				return writeJSON(cmd, pathOutput{Path: settings.DBPath})
+			}
 			_, err = fmt.Fprintln(cmd.OutOrStdout(), settings.DBPath)
 			return err
 		},
@@ -50,6 +53,9 @@ func newDBMigrateCommand() *cobra.Command {
 			}
 			if err := migrateDatabase(cmd.Context(), settings.DBPath); err != nil {
 				return err
+			}
+			if jsonOutputFromContext(cmd.Context()) {
+				return writeJSON(cmd, databaseActionOutput{OK: true, Action: "migrate", Path: settings.DBPath})
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "migrated %s\n", settings.DBPath)
 			return err
@@ -74,6 +80,9 @@ func newDBResetCommand() *cobra.Command {
 			}
 			if err := resetDatabase(cmd.Context(), settings.DBPath); err != nil {
 				return err
+			}
+			if jsonOutputFromContext(cmd.Context()) {
+				return writeJSON(cmd, databaseActionOutput{OK: true, Action: "reset", Path: settings.DBPath})
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "reset %s\n", settings.DBPath)
 			return err

@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -188,18 +187,14 @@ func progressOutputFromRow(row sqlc.Progress) progressOutput {
 
 func writeProgress(cmd *cobra.Command, progress progressOutput) error {
 	if jsonOutputFromContext(cmd.Context()) {
-		encoder := json.NewEncoder(cmd.OutOrStdout())
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(progress)
+		return writeJSON(cmd, progress)
 	}
 	return writeProgressText(cmd, progress)
 }
 
 func writeProgressList(cmd *cobra.Command, progress []progressOutput) error {
 	if jsonOutputFromContext(cmd.Context()) {
-		encoder := json.NewEncoder(cmd.OutOrStdout())
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(progress)
+		return writeJSON(cmd, progress)
 	}
 	if len(progress) == 0 {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), "No progress")

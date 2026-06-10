@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -576,9 +575,7 @@ func loadTaskDetails(ctx context.Context, queries *sqlc.Queries, task sqlc.Task)
 
 func writeTasks(cmd *cobra.Command, tasks []taskOutput) error {
 	if jsonOutputFromContext(cmd.Context()) {
-		encoder := json.NewEncoder(cmd.OutOrStdout())
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(tasks)
+		return writeJSON(cmd, tasks)
 	}
 
 	if len(tasks) == 0 {
@@ -600,9 +597,7 @@ func writeTasks(cmd *cobra.Command, tasks []taskOutput) error {
 
 func writeTask(cmd *cobra.Command, task taskOutput) error {
 	if jsonOutputFromContext(cmd.Context()) {
-		encoder := json.NewEncoder(cmd.OutOrStdout())
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(task)
+		return writeJSON(cmd, task)
 	}
 	return writeTaskText(cmd, task)
 }

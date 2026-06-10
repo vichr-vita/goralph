@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -129,9 +128,7 @@ func writeProject(cmd *cobra.Command, project sqlc.Project, title string) error 
 	}
 
 	if jsonOutputFromContext(cmd.Context()) {
-		encoder := json.NewEncoder(cmd.OutOrStdout())
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(out)
+		return writeJSON(cmd, out)
 	}
 
 	_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\n  ID: %d\n  Name: %s\n  Root: %s\n  Description: %s\n  Created: %s\n  Updated: %s\n", title, project.ID, project.Name, project.RootPath, project.Description, project.CreatedAt, project.UpdatedAt)

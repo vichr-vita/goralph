@@ -830,6 +830,46 @@ func TestProgressAddAndListSupportsTaskFilterJSONAndActiveRun(t *testing.T) {
 	}
 }
 
+func TestProjectlessCommandsSupportJSON(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	stdout := &bytes.Buffer{}
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "db", "migrate"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute db migrate --json: %v", err)
+	}
+	var migrated databaseActionOutput
+	if err := json.Unmarshal(stdout.Bytes(), &migrated); err != nil {
+		t.Fatalf("decode db migrate JSON %q: %v", stdout.String(), err)
+	}
+	if !migrated.OK || migrated.Action != "migrate" || migrated.Path != dbPath {
+		t.Fatalf("db migrate JSON = %+v, want migrate path", migrated)
+	}
+
+	prdPath := writePRDFile(t, `[{"category":"cli","description":"json validate","steps":["one"],"passes":false}]`)
+	stdout.Reset()
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "prd", "validate", prdPath})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd validate --json: %v", err)
+	}
+	var validated fileActionOutput
+	if err := json.Unmarshal(stdout.Bytes(), &validated); err != nil {
+		t.Fatalf("decode prd validate JSON %q: %v", stdout.String(), err)
+	}
+	if !validated.OK || validated.Action != "validate" || validated.File != prdPath {
+		t.Fatalf("prd validate JSON = %+v, want validate file", validated)
+	}
+}
+
 func TestFeedbackCommandsSetListAndRun(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -891,6 +931,48 @@ func TestFeedbackCommandsSetListAndRun(t *testing.T) {
 	cmd.SetErr(&bytes.Buffer{})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "feedback command \"missing\" not found") {
 		t.Fatalf("feedback run missing error = %v, want not found", err)
+	}
+}
+
+func TestFeedbackRunJSONKeepsCommandStdoutOffStdout(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	_, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	t.Setenv("GO_RALPH_TEST_FEEDBACK_OUTPUT", "command-output")
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "feedback", "set", "unit", "printf \"$GO_RALPH_TEST_FEEDBACK_OUTPUT\""})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute feedback set: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "feedback", "run", "unit"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute feedback run --json: %v", err)
+	}
+	if strings.Contains(stdout.String(), "command-output") {
+		t.Fatalf("feedback JSON stdout contains command output: %q", stdout.String())
+	}
+	var results []feedbackRunOutput
+	if err := json.Unmarshal(stdout.Bytes(), &results); err != nil {
+		t.Fatalf("decode feedback run JSON %q: %v", stdout.String(), err)
+	}
+	if len(results) != 1 || !results[0].OK || results[0].Name != "unit" {
+		t.Fatalf("feedback run JSON = %+v, want unit success", results)
+	}
+	if !strings.Contains(stderr.String(), "command-output") {
+		t.Fatalf("feedback stderr = %q, want command output", stderr.String())
 	}
 }
 
@@ -1486,6 +1568,60 @@ func TestRunOneRequiresForceForCrossHostStaleHeartbeat(t *testing.T) {
 		t.Fatalf("runner marker err = %v, want runner not executed", err)
 	}
 	assertRunCount(t, dbPath, 1)
+}
+
+func TestRunOneJSONKeepsRunnerStdoutOffStdout(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"json run","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	runnerScript := "#!/bin/sh\nprintf 'runner-human-output\\n'\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	viper.Reset()
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "--json", "run", "one"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run one --json: %v", err)
+	}
+	if strings.Contains(stdout.String(), "runner-human-output") {
+		t.Fatalf("run JSON stdout contains runner output: %q", stdout.String())
+	}
+	var out runOutput
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode run JSON %q: %v", stdout.String(), err)
+	}
+	if out.Status != "succeeded" || out.TaskID == nil || *out.TaskID != tasks[0].id {
+		t.Fatalf("run JSON = %+v, want succeeded task", out)
+	}
+	if !strings.Contains(stderr.String(), "runner-human-output") {
+		t.Fatalf("run stderr = %q, want runner output", stderr.String())
+	}
 }
 
 func TestRunOneReportsNoEligibleTasks(t *testing.T) {

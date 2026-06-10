@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -92,6 +91,7 @@ func newRunOneCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 			if err := requireCleanWorktreeBeforeAgent(cmd.Context(), project, *allowDirty); err != nil {
 				return err
 			}
+			runnerStdout := jsonModeWriter(cmd, cmd.OutOrStdout())
 
 			var forcedTaskID *int64
 			if cmd.Flags().Changed("task") {
@@ -101,10 +101,9 @@ func newRunOneCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 				forcedTaskID = &taskID
 			}
 
-			run, ran, _, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, forcedTaskID, false, !*allowDirty, activePolicy, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			run, ran, _, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, forcedTaskID, false, !*allowDirty, activePolicy, runnerStdout, cmd.ErrOrStderr())
 			if !ran {
-				_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
-				return printErr
+				return writeRunMessage(cmd, "no_eligible", "No eligible task", 0)
 			}
 			if err != nil {
 				return err
@@ -141,6 +140,7 @@ func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 				return err
 			}
 			activePolicy := activeRunPolicy{Force: *force, StaleAfter: *staleAfter}
+			runnerStdout := jsonModeWriter(cmd, cmd.OutOrStdout())
 			if err := requireNoActiveRun(cmd.Context(), settings.DBPath, project.ID, activePolicy); err != nil {
 				return err
 			}
@@ -156,30 +156,26 @@ func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 				}
 				switch stop.kind {
 				case runAllStopAllPassed:
-					_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "All tasks passed")
-					return printErr
+					return writeRunMessage(cmd, "all_passed", "All tasks passed", runs)
 				case runAllStopBlockedOrFailed:
 					return fmt.Errorf("blocked or failed tasks remain: %s", strings.Join(stop.descriptions, ", "))
 				case runAllStopNoEligible:
 					if runs == 0 {
-						_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
-						return printErr
+						return writeRunMessage(cmd, "no_eligible", "No eligible task", runs)
 					}
 					return nil
 				}
 				if maxTurns > 0 && runs >= maxTurns {
-					_, printErr := fmt.Fprintf(cmd.OutOrStdout(), "Max turns reached (%d)\n", maxTurns)
-					return printErr
+					return writeRunMessage(cmd, "max_turns", fmt.Sprintf("Max turns reached (%d)", maxTurns), runs)
 				}
 				if err := requireCleanWorktreeBeforeAgent(cmd.Context(), project, *allowDirty); err != nil {
 					return err
 				}
 
-				run, ran, complete, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, nil, continueOnBlocked, !*allowDirty, activePolicy, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				run, ran, complete, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, nil, continueOnBlocked, !*allowDirty, activePolicy, runnerStdout, cmd.ErrOrStderr())
 				if !ran {
 					if runs == 0 {
-						_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
-						return printErr
+						return writeRunMessage(cmd, "no_eligible", "No eligible task", runs)
 					}
 					return nil
 				}
@@ -191,8 +187,7 @@ func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 					return err
 				}
 				if complete {
-					_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "Agent declared completion")
-					return printErr
+					return writeRunMessage(cmd, "complete", "Agent declared completion", runs)
 				}
 				if run.TaskID == nil {
 					return nil
@@ -871,7 +866,13 @@ func newRunOpenCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runPiCommand(cmd.Context(), project, settings.RunnerCommand, []string{"--session", ref}, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			if err := runPiCommand(cmd.Context(), project, settings.RunnerCommand, []string{"--session", ref}, cmd.InOrStdin(), jsonModeWriter(cmd, cmd.OutOrStdout()), cmd.ErrOrStderr()); err != nil {
+				return err
+			}
+			if jsonOutputFromContext(cmd.Context()) {
+				return writeJSON(cmd, runSessionCommandOutput{OK: true, Action: "open", RunID: id, SessionRef: ref})
+			}
+			return nil
 		},
 	}
 }
@@ -903,10 +904,18 @@ func newRunExportCommand() *cobra.Command {
 				return err
 			}
 			piArgs := []string{"--export", ref}
+			file := ""
 			if len(args) == 2 {
-				piArgs = append(piArgs, args[1])
+				file = args[1]
+				piArgs = append(piArgs, file)
 			}
-			return runPiCommand(cmd.Context(), project, settings.RunnerCommand, piArgs, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			if err := runPiCommand(cmd.Context(), project, settings.RunnerCommand, piArgs, cmd.InOrStdin(), jsonModeWriter(cmd, cmd.OutOrStdout()), cmd.ErrOrStderr()); err != nil {
+				return err
+			}
+			if jsonOutputFromContext(cmd.Context()) {
+				return writeJSON(cmd, runSessionCommandOutput{OK: true, Action: "export", RunID: id, SessionRef: ref, File: file})
+			}
+			return nil
 		},
 	}
 }
@@ -1037,9 +1046,7 @@ func runOutputFromRow(row sqlc.Run) runOutput {
 
 func writeRunList(cmd *cobra.Command, runs []runOutput) error {
 	if jsonOutputFromContext(cmd.Context()) {
-		encoder := json.NewEncoder(cmd.OutOrStdout())
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(runs)
+		return writeJSON(cmd, runs)
 	}
 	if len(runs) == 0 {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), "No runs")
@@ -1069,11 +1076,17 @@ func writeRunList(cmd *cobra.Command, runs []runOutput) error {
 
 func writeRun(cmd *cobra.Command, run runOutput) error {
 	if jsonOutputFromContext(cmd.Context()) {
-		encoder := json.NewEncoder(cmd.OutOrStdout())
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(run)
+		return writeJSON(cmd, run)
 	}
 	return writeRunText(cmd, run)
+}
+
+func writeRunMessage(cmd *cobra.Command, status string, message string, runs int) error {
+	if jsonOutputFromContext(cmd.Context()) {
+		return writeJSON(cmd, messageOutput{OK: true, Status: status, Message: message, Runs: runs})
+	}
+	_, err := fmt.Fprintln(cmd.OutOrStdout(), message)
+	return err
 }
 
 func writeRunText(cmd *cobra.Command, run runOutput) error {

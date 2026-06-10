@@ -39,6 +39,9 @@ func newPRDValidateCommand() *cobra.Command {
 			if err := prd.ValidateFile(args[0]); err != nil {
 				return err
 			}
+			if jsonOutputFromContext(cmd.Context()) {
+				return writeJSON(cmd, fileActionOutput{OK: true, Action: "validate", File: args[0]})
+			}
 			_, err := fmt.Fprintf(cmd.OutOrStdout(), "validated %s\n", args[0])
 			return err
 		},
@@ -83,6 +86,9 @@ func newPRDImportCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if jsonOutputFromContext(cmd.Context()) {
+				return writeJSON(cmd, prdImportOutput{OK: true, Imported: result.Imported, Mode: result.Mode, File: args[0]})
+			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "imported %d tasks (%s) from %s\n", result.Imported, result.Mode, args[0])
 			return err
 		},
@@ -122,7 +128,13 @@ func newPRDExportCommand() *cobra.Command {
 				_, err = cmd.OutOrStdout().Write(data)
 				return err
 			}
-			return os.WriteFile(args[0], data, 0o600)
+			if err := os.WriteFile(args[0], data, 0o600); err != nil {
+				return err
+			}
+			if jsonOutputFromContext(cmd.Context()) {
+				return writeJSON(cmd, fileActionOutput{OK: true, Action: "export", File: args[0]})
+			}
+			return nil
 		},
 	}
 }
@@ -146,6 +158,13 @@ const (
 type importResult struct {
 	Imported int
 	Mode     importMode
+}
+
+type prdImportOutput struct {
+	OK       bool       `json:"ok"`
+	Imported int        `json:"imported"`
+	Mode     importMode `json:"mode"`
+	File     string     `json:"file"`
 }
 
 func importPRDItems(ctx context.Context, dbPath string, projectID int64, items []prd.Item, mode importMode, cmd *cobra.Command) (importResult, error) {
