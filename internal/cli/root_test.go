@@ -1410,7 +1410,10 @@ func TestRunAllStopsOnCompletePromise(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	prdPath := writePRDFile(t, `[{"category":"runner","description":"pending","steps":["one"],"passes":false}]`)
+	prdPath := writePRDFile(t, `[
+		{"category":"runner","description":"first remains","steps":["one"],"passes":false},
+		{"category":"runner","description":"second remains","steps":["two"],"passes":false}
+	]`)
 	cmd := NewRootCommand()
 	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
 	cmd.SetOut(&bytes.Buffer{})
@@ -1418,17 +1421,21 @@ func TestRunAllStopsOnCompletePromise(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute prd import: %v", err)
 	}
-	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nprintf '<promise>COMPLETE</promise>\\n'\n"), 0o700); err != nil {
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nprintf 'prelude\\n'\nprintf '<promise>COMPLETE</promise>\\n' >&2\n"), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
 	viper.Reset()
 
+	stdout := &bytes.Buffer{}
 	cmd = NewRootCommand()
 	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "all"})
-	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetOut(stdout)
 	cmd.SetErr(&bytes.Buffer{})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute run all complete promise: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Agent declared completion") {
+		t.Fatalf("run all output = %q, want completion report", stdout.String())
 	}
 	database, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -1441,6 +1448,13 @@ func TestRunAllStopsOnCompletePromise(t *testing.T) {
 	}
 	if runs != 1 {
 		t.Fatalf("runs = %d, want 1", runs)
+	}
+	var pending int
+	if err := database.QueryRow("SELECT COUNT(*) FROM task WHERE status = 'pending'").Scan(&pending); err != nil {
+		t.Fatalf("count pending tasks: %v", err)
+	}
+	if pending != 2 {
+		t.Fatalf("pending tasks = %d, want 2", pending)
 	}
 }
 

@@ -177,7 +177,8 @@ func newRunAllCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 					return err
 				}
 				if complete {
-					return nil
+					_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "Agent declared completion")
+					return printErr
 				}
 				if run.TaskID == nil {
 					return nil
