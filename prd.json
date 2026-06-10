@@ -432,7 +432,7 @@
       "Require --yes or --force for destructive non-TTY actions",
       "Avoid logging secrets beyond what the runner itself prints"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "cli",

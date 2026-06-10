@@ -16,6 +16,20 @@ import (
 	"github.com/spf13/viper"
 )
 
+func TestSafeCommandLineRedactsSensitiveValues(t *testing.T) {
+	got := safeCommandLine([]string{"runner", "--token", "abc", "secret=value", "--password=bad", "--safe", "ok"})
+	for _, unwanted := range []string{"abc", "value", "bad"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("safe command line = %q, leaked %q", got, unwanted)
+		}
+	}
+	for _, want := range []string{"runner", "--token", "secret=[REDACTED]", "--password=[REDACTED]", "--safe", "ok"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("safe command line = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestValidateTaskStatusRejectsUnknown(t *testing.T) {
 	for _, status := range []string{"pending", "in_progress", "blocked", "passed", "failed"} {
 		t.Run(status, func(t *testing.T) {

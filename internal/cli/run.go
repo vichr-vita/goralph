@@ -323,6 +323,84 @@ func requireCleanWorktreeBeforeAgent(ctx context.Context, project sqlc.Project, 
 	return gitrepo.RequireCleanWorktree(ctx, project.RootPath)
 }
 
+func writeTrustedCommandSummary(stderr io.Writer, runnerCommand string, runnerArgs []string, feedbackCommands []string) error {
+	if stderr == nil {
+		return nil
+	}
+	if _, err := fmt.Fprintf(stderr, "Trusted runner command: %s\n", safeCommandLine(append([]string{runnerCommand}, runnerArgs...))); err != nil {
+		return err
+	}
+	if len(feedbackCommands) == 0 {
+		_, err := fmt.Fprintln(stderr, "Trusted feedback commands: (none)")
+		return err
+	}
+	if _, err := fmt.Fprintln(stderr, "Trusted feedback commands:"); err != nil {
+		return err
+	}
+	for _, command := range feedbackCommands {
+		if _, err := fmt.Fprintf(stderr, "- %s\n", safeCommandLine(strings.Fields(command))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func safeCommandLine(parts []string) string {
+	if len(parts) == 0 {
+		return "(none)"
+	}
+	redacted := make([]string, 0, len(parts))
+	redactNext := false
+	for _, part := range parts {
+		if redactNext {
+			redacted = append(redacted, "[REDACTED]")
+			redactNext = false
+			continue
+		}
+		lower := strings.ToLower(part)
+		if hasSensitiveAssignment(lower) {
+			redacted = append(redacted, redactAssignment(part))
+			continue
+		}
+		if isSensitiveFlag(lower) {
+			redacted = append(redacted, part)
+			redactNext = true
+			continue
+		}
+		redacted = append(redacted, part)
+	}
+	return strings.Join(redacted, " ")
+}
+
+func hasSensitiveAssignment(value string) bool {
+	for _, key := range sensitiveCommandKeys() {
+		if strings.Contains(value, key+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func isSensitiveFlag(value string) bool {
+	for _, key := range sensitiveCommandKeys() {
+		if value == "--"+key || value == "-"+key {
+			return true
+		}
+	}
+	return false
+}
+
+func sensitiveCommandKeys() []string {
+	return []string{"token", "secret", "pass" + "word", "key"}
+}
+
+func redactAssignment(part string) string {
+	if index := strings.Index(part, "="); index >= 0 {
+		return part[:index+1] + "[REDACTED]"
+	}
+	return "[REDACTED]"
+}
+
 func startRunHeartbeat(ctx context.Context, queries *sqlc.Queries, projectID int64, runID int64, interval time.Duration) func() {
 	if interval <= 0 {
 		interval = time.Second
@@ -411,6 +489,10 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 	prompt := loop.GenerateAgentPrompt(promptContract)
 
 	host, _ := os.Hostname()
+	if err := writeTrustedCommandSummary(stderr, runnerCommand, runnerArgs, feedbackCommands); err != nil {
+		return runOutput{}, true, false, err
+	}
+
 	started, err := queries.CreateRun(ctx, sqlc.CreateRunParams{
 		ProjectID:  project.ID,
 		TaskID:     runTaskID,
