@@ -592,7 +592,7 @@
       "Document feedback commands",
       "Document db commands and global flags"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "documentation",

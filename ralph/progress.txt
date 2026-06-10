@@ -41,3 +41,4 @@ Implemented run one --task targeting with current-project validation and forced-
 testing/Add git safety tests: added temp git repo safety coverage for dirty pre-run, allow-dirty bypass, dirty post-run failure, clean committed post-run success.
 2026-06-10 Add concurrency/stale run tests; go test ./... passes.
 2026-06-10: Wrote README quickstart/core workflow docs for build/install, git-root project detection, PRD import/export, run one/all, and agent progress/task contract.
+2026-06-10: Documented goralph command reference in README, covering project, PRD, task/unblock, progress, run/session, feedback, DB, and global flags.
