@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1598,7 +1599,7 @@ func TestRunOneRequiresForceForCrossHostStaleHeartbeat(t *testing.T) {
 	assertRunCount(t, dbPath, 1)
 }
 
-func TestRunOneJSONKeepsRunnerStdoutOffStdout(t *testing.T) {
+func TestRunOneJSONEmitsNDJSONEvents(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
 	isolateDatabaseEnv(t)
@@ -1637,19 +1638,70 @@ func TestRunOneJSONKeepsRunnerStdoutOffStdout(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute run one --json: %v", err)
 	}
-	if strings.Contains(stdout.String(), "runner-human-output") {
-		t.Fatalf("run JSON stdout contains runner output: %q", stdout.String())
+
+	events := decodeRunEvents(t, stdout.Bytes())
+	wantTypes := []string{"run_started", "runner_output", "task_selected", "progress_added", "run_completed"}
+	for _, want := range wantTypes {
+		if !hasRunEventType(events, want) {
+			t.Fatalf("events = %#v, want %s", events, want)
+		}
 	}
-	var out runOutput
-	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
-		t.Fatalf("decode run JSON %q: %v", stdout.String(), err)
+	if !hasRunnerOutput(events, "stdout", "runner-human-output") {
+		t.Fatalf("events = %#v, want runner output event", events)
 	}
-	if out.Status != "succeeded" || out.TaskID == nil || *out.TaskID != tasks[0].id {
-		t.Fatalf("run JSON = %+v, want succeeded task", out)
+	completed := lastRunEventOfType(events, "run_completed")
+	if completed == nil || completed.Run == nil || completed.Run.Status != "succeeded" || completed.Run.TaskID == nil || *completed.Run.TaskID != tasks[0].id {
+		t.Fatalf("run_completed = %#v, want succeeded task", completed)
 	}
-	if !strings.Contains(stderr.String(), "runner-human-output") {
-		t.Fatalf("run stderr = %q, want runner output", stderr.String())
+	if strings.Contains(stderr.String(), "runner-human-output") {
+		t.Fatalf("run stderr = %q, want runner output only as NDJSON event", stderr.String())
 	}
+}
+
+func decodeRunEvents(t *testing.T, data []byte) []runEvent {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	events := []runEvent{}
+	for {
+		var event runEvent
+		err := decoder.Decode(&event)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("decode NDJSON events %q: %v", string(data), err)
+		}
+		if event.Type == "" {
+			t.Fatalf("event missing type: %#v", event)
+		}
+		events = append(events, event)
+	}
+	if len(events) == 0 {
+		t.Fatalf("no NDJSON events in %q", string(data))
+	}
+	return events
+}
+
+func hasRunEventType(events []runEvent, eventType string) bool {
+	return lastRunEventOfType(events, eventType) != nil
+}
+
+func hasRunnerOutput(events []runEvent, stream string, text string) bool {
+	for _, event := range events {
+		if event.Type == "runner_output" && event.Stream == stream && strings.Contains(event.Data, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func lastRunEventOfType(events []runEvent, eventType string) *runEvent {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == eventType {
+			return &events[i]
+		}
+	}
+	return nil
 }
 
 func TestRunOneReportsNoEligibleTasks(t *testing.T) {

@@ -482,7 +482,7 @@
       "Emit run_completed or run_failed events at the end",
       "Do not mix human text into stdout in NDJSON mode"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "cli",

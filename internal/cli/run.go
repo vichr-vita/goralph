@@ -91,6 +91,7 @@ func newRunOneCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 			if err := requireCleanWorktreeBeforeAgent(cmd.Context(), project, *allowDirty); err != nil {
 				return err
 			}
+			events := newRunEventWriter(cmd)
 			runnerStdout := jsonModeWriter(cmd, cmd.OutOrStdout())
 
 			var forcedTaskID *int64
@@ -101,12 +102,15 @@ func newRunOneCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 				forcedTaskID = &taskID
 			}
 
-			run, ran, _, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, forcedTaskID, false, !*allowDirty, activePolicy, runnerStdout, cmd.ErrOrStderr())
+			run, ran, _, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, forcedTaskID, false, !*allowDirty, activePolicy, events, runnerStdout, cmd.ErrOrStderr())
 			if !ran {
 				return writeRunMessage(cmd, string(OutcomeNoEligibleTasks), "No eligible task", 0)
 			}
 			if err != nil {
 				return runFailureOutcome(err)
+			}
+			if events != nil {
+				return events.Err()
 			}
 			return writeRun(cmd, run)
 		},
@@ -140,6 +144,7 @@ func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 				return err
 			}
 			activePolicy := activeRunPolicy{Force: *force, StaleAfter: *staleAfter}
+			events := newRunEventWriter(cmd)
 			runnerStdout := jsonModeWriter(cmd, cmd.OutOrStdout())
 			if err := requireNoActiveRun(cmd.Context(), settings.DBPath, project.ID, activePolicy); err != nil {
 				return err
@@ -172,7 +177,7 @@ func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 					return err
 				}
 
-				run, ran, complete, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, nil, continueOnBlocked, !*allowDirty, activePolicy, runnerStdout, cmd.ErrOrStderr())
+				run, ran, complete, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, nil, continueOnBlocked, !*allowDirty, activePolicy, events, runnerStdout, cmd.ErrOrStderr())
 				if !ran {
 					if runs == 0 {
 						return writeRunMessage(cmd, string(OutcomeNoEligibleTasks), "No eligible task", runs)
@@ -183,7 +188,11 @@ func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 				if err != nil {
 					return runFailureOutcome(err)
 				}
-				if err := writeRun(cmd, run); err != nil {
+				if events != nil {
+					if err := events.Err(); err != nil {
+						return err
+					}
+				} else if err := writeRun(cmd, run); err != nil {
 					return err
 				}
 				if complete {
@@ -430,7 +439,7 @@ func startRunHeartbeat(ctx context.Context, queries *sqlc.Queries, projectID int
 	}
 }
 
-func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, feedbackCommands []string, quiet bool, seen map[int64]struct{}, forcedTaskID *int64, pendingOnly bool, verifyCleanAfter bool, activePolicy activeRunPolicy, stdout io.Writer, stderr io.Writer) (runOutput, bool, bool, error) {
+func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, feedbackCommands []string, quiet bool, seen map[int64]struct{}, forcedTaskID *int64, pendingOnly bool, verifyCleanAfter bool, activePolicy activeRunPolicy, events *runEventWriter, stdout io.Writer, stderr io.Writer) (runOutput, bool, bool, error) {
 	database, err := db.Open(dbPath)
 	if err != nil {
 		return runOutput{}, false, false, fmt.Errorf("open database: %w", err)
@@ -509,14 +518,30 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 		return runOutput{}, true, false, fmt.Errorf("create run: %w", err)
 	}
 
+	if err := events.Emit(runEvent{Type: "run_started", RunID: started.ID}); err != nil {
+		return runOutputFromRow(started), true, false, err
+	}
+	if runTaskID.Valid {
+		if err := events.Emit(runEvent{Type: "task_selected", RunID: started.ID, TaskID: runTaskID.Int64, Mode: "forced"}); err != nil {
+			return runOutputFromRow(started), true, false, err
+		}
+	}
+
+	runnerStdout := stdout
+	runnerStderr := stderr
+	if events != nil {
+		runnerStdout = events.OutputWriter("stdout")
+		runnerStderr = events.OutputWriter("stderr")
+	}
+
 	stopHeartbeat := startRunHeartbeat(ctx, queries, project.ID, started.ID, time.Second)
 	var startErr error
 	result, runErr := pi.New(runnerCommand, runnerArgs).Run(ctx, runner.Request{
 		Prompt:  prompt,
 		WorkDir: project.RootPath,
 		Quiet:   quiet,
-		Stdout:  stdout,
-		Stderr:  stderr,
+		Stdout:  runnerStdout,
+		Stderr:  runnerStderr,
 		OnStart: func(metadata runner.Metadata) {
 			host := metadata.Host
 			if host == "" {
@@ -533,6 +558,9 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 		},
 	})
 	stopHeartbeat()
+	if eventErr := events.Err(); eventErr != nil && runErr == nil {
+		runErr = eventErr
+	}
 	metadata := result.Metadata
 	if runErr == nil && startErr != nil {
 		runErr = startErr
@@ -562,8 +590,13 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 			if runErr == nil {
 				runErr = fmt.Errorf("set run %d task: %w", started.ID, err)
 			}
-		} else if seen != nil {
-			seen[selectedTaskID] = struct{}{}
+		} else {
+			if err := events.Emit(runEvent{Type: "task_selected", RunID: started.ID, TaskID: selectedTaskID, Mode: "selected"}); err != nil && runErr == nil {
+				runErr = err
+			}
+			if seen != nil {
+				seen[selectedTaskID] = struct{}{}
+			}
 		}
 	}
 	if runErr == nil && verifyCleanAfter {
@@ -591,15 +624,26 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 		ID:            started.ID,
 	})
 	if finishErr != nil {
-		return runOutputFromRow(started), true, complete, fmt.Errorf("finish run %d: %w", started.ID, finishErr)
+		err := fmt.Errorf("finish run %d: %w", started.ID, finishErr)
+		_ = events.Emit(runEvent{Type: "run_failed", RunID: started.ID, Run: ptrRunOutput(runOutputFromRow(started)), Error: err.Error()})
+		return runOutputFromRow(started), true, complete, err
+	}
+	finishedOutput := runOutputFromRow(finished)
+	if err := emitRunProgressEvents(ctx, queries, project.ID, finished.ID, events); err != nil && runErr == nil {
+		runErr = err
 	}
 	if err := verifyFinishedRunMetadata(finished); err != nil {
-		return runOutputFromRow(finished), true, complete, err
+		_ = events.Emit(runEvent{Type: "run_failed", RunID: finished.ID, Run: ptrRunOutput(finishedOutput), Error: err.Error()})
+		return finishedOutput, true, complete, err
 	}
 	if runErr != nil {
-		return runOutputFromRow(finished), true, complete, runErr
+		_ = events.Emit(runEvent{Type: "run_failed", RunID: finished.ID, Run: ptrRunOutput(finishedOutput), Error: runErr.Error()})
+		return finishedOutput, true, complete, runErr
 	}
-	return runOutputFromRow(finished), true, complete, nil
+	if err := events.Emit(runEvent{Type: "run_completed", RunID: finished.ID, Run: ptrRunOutput(finishedOutput)}); err != nil {
+		return finishedOutput, true, complete, err
+	}
+	return finishedOutput, true, complete, nil
 }
 
 type runAllStopKind string
@@ -720,6 +764,27 @@ func verifyAgentTaskUpdate(ctx context.Context, queries *sqlc.Queries, projectID
 		return taskID, nil
 	}
 	return 0, fmt.Errorf("run %d selected task could not be determined", runID)
+}
+
+func ptrRunOutput(run runOutput) *runOutput {
+	return &run
+}
+
+func emitRunProgressEvents(ctx context.Context, queries *sqlc.Queries, projectID int64, runID int64, events *runEventWriter) error {
+	if events == nil {
+		return nil
+	}
+	progress, err := queries.ListProgressByRun(ctx, sqlc.ListProgressByRunParams{ProjectID: projectID, RunID: sql.NullInt64{Int64: runID, Valid: true}})
+	if err != nil {
+		return fmt.Errorf("list run %d progress events: %w", runID, err)
+	}
+	for _, row := range progress {
+		progressOutput := progressOutputFromRow(row)
+		if err := events.Emit(runEvent{Type: "progress_added", RunID: runID, Progress: &progressOutput}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func verifyFinishedRunMetadata(run sqlc.Run) error {
@@ -1089,12 +1154,8 @@ func writeRun(cmd *cobra.Command, run runOutput) error {
 }
 
 func writeRunMessage(cmd *cobra.Command, status string, message string, runs int) error {
-	if jsonOutputFromContext(cmd.Context()) {
-		outcome := Outcome(status)
-		if _, ok := outcomeExitCodes[outcome]; !ok {
-			outcome = OutcomeSuccess
-		}
-		return writeJSON(cmd, messageOutput{OK: true, Outcome: outcome, Status: status, Message: message, Runs: runs})
+	if events := newRunEventWriter(cmd); events != nil {
+		return events.Emit(runEvent{Type: "run_completed", Status: status, Message: message, Runs: runs})
 	}
 	_, err := fmt.Fprintln(cmd.OutOrStdout(), message)
 	return err
