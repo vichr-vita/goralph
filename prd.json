@@ -103,7 +103,7 @@
       "Use the repository directory name as the default project name",
       "Show an error when no git root can be found"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "cli",

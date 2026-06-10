@@ -9,6 +9,51 @@ import (
 	"context"
 )
 
+const createProject = `-- name: CreateProject :one
+INSERT INTO project (name, root_path)
+VALUES (?, ?)
+RETURNING id, name, root_path, description, created_at, updated_at
+`
+
+type CreateProjectParams struct {
+	Name     string
+	RootPath string
+}
+
+func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error) {
+	row := q.db.QueryRowContext(ctx, createProject, arg.Name, arg.RootPath)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.RootPath,
+		&i.Description,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getProjectByRootPath = `-- name: GetProjectByRootPath :one
+SELECT id, name, root_path, description, created_at, updated_at
+FROM project
+WHERE root_path = ?
+`
+
+func (q *Queries) GetProjectByRootPath(ctx context.Context, rootPath string) (Project, error) {
+	row := q.db.QueryRowContext(ctx, getProjectByRootPath, rootPath)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.RootPath,
+		&i.Description,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const ping = `-- name: Ping :one
 SELECT 1
 `

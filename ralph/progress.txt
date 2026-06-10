@@ -6,3 +6,4 @@
 2026-06-10: Implemented normalized SQLite schema for projects, tasks, steps, progress, runs, and feedback commands. Checks: sqlc generate, gofmt, go test ./... passed.
 2026-06-10: Added database management commands for path, migrate, and force-gated reset with temp --db CLI checks and passing go test ./....
 2026-06-10: Enforced task status enum values (pending, in_progress, blocked, passed, failed), added CLI status validation and PRD export pass mapping. Checks: sqlc generate, gofmt, go test ./..., db migrate CLI check passed.
+2026-06-10: Resolved current project from nearest git root and auto-created project records by root path with default repo-name project names. Checks: sqlc generate, gofmt, go test ./... passed.

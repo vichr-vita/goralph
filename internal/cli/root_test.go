@@ -92,6 +92,59 @@ func TestRootCommandUsesDatabaseFlag(t *testing.T) {
 	assertGooseVersionRecorded(t, dbPath)
 }
 
+func TestRootCommandAutoCreatesCurrentProject(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot := filepath.Join(t.TempDir(), "sample-repo")
+	workDir := filepath.Join(repoRoot, "nested", "pkg")
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("create git root: %v", err)
+	}
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("create work dir: %v", err)
+	}
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute root command: %v", err)
+	}
+	assertProject(t, dbPath, repoRoot, "sample-repo")
+}
+
+func TestRootCommandErrorsWithoutGitRoot(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	workDir := filepath.Join(t.TempDir(), "not-a-repo")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("create work dir: %v", err)
+	}
+	chdir(t, workDir)
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", filepath.Join(t.TempDir(), "ralph.db")})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("execute root command succeeded, want no git root error")
+	}
+	if !strings.Contains(err.Error(), "no git root found") {
+		t.Fatalf("error = %q, want no git root found", err.Error())
+	}
+}
+
 func TestDBPathPrintsResolvedDatabasePath(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -193,6 +246,41 @@ func TestDBResetForceRecreatesMigratedDatabase(t *testing.T) {
 	}
 	assertGooseVersionRecorded(t, dbPath)
 	assertTableMissing(t, dbPath, "stale")
+}
+
+func chdir(t *testing.T, dir string) {
+	t.Helper()
+
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("change working directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldDir); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	})
+}
+
+func assertProject(t *testing.T, dbPath string, rootPath string, name string) {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	var gotName string
+	if err := database.QueryRow("SELECT name FROM project WHERE root_path = ?", rootPath).Scan(&gotName); err != nil {
+		t.Fatalf("query project: %v", err)
+	}
+	if gotName != name {
+		t.Fatalf("project name = %q, want %q", gotName, name)
+	}
 }
 
 func assertGooseVersionRecorded(t *testing.T, dbPath string) {
