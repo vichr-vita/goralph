@@ -21,6 +21,67 @@ goralph --help
 
 The default runner command is `pi -p <generated-prompt>`. Use `--config`, user config, or project config when you need a different runner.
 
+## Configuration examples
+
+goralph reads YAML config from `$XDG_CONFIG_HOME/goralph/config.yaml` or `~/.config/goralph/config.yaml`, then overlays the nearest `.ralph/config.yaml` found while walking up from the current directory. Use `--config <path>` to load one explicit config file instead of user/project discovery.
+
+Example user config at `~/.config/goralph/config.yaml`:
+
+```yaml
+# Optional default SQLite database path.
+# Use an absolute path; goralph does not expand shell `~` here.
+db: /home/alice/.local/share/goralph/ralph.db
+
+# Default Pi runner configuration. goralph appends the generated prompt.
+runner:
+  command: pi
+  args:
+    - -p
+
+# Static feedback commands included in agent prompts.
+feedback_commands:
+  - gofmt -w .
+  - go test ./...
+```
+
+Example project config at `.ralph/config.yaml`:
+
+```yaml
+# Project-local database override for this worktree.
+# Relative paths resolve from the current working directory.
+db: .ralph/ralph.db
+
+# Same as default Pi runner, shown explicitly.
+runner:
+  command: pi
+  args:
+    - -p
+
+# Alternative nested feedback command form.
+feedback:
+  commands:
+    - go test ./...
+    - go run ./cmd/goralph --help
+```
+
+Equivalent flat keys are also supported:
+
+```yaml
+runner_command: pi
+runner_args: [-p]
+feedback_command: go test ./...
+```
+
+Config precedence:
+
+1. Built-in defaults: runner `pi` with args `[-p]`; database at `$XDG_DATA_HOME/goralph/ralph.db`, or `~/.local/share/goralph/ralph.db` when `XDG_DATA_HOME` is unset.
+2. User config: `~/.config/goralph/config.yaml`.
+3. Nearest project config: `.ralph/config.yaml`; project values override user values.
+4. Environment variables such as `GORALPH_RUNNER_COMMAND` and `GORALPH_DB`.
+5. CLI flags; `--config <path>` replaces user/project config discovery, and `--db <path>` wins for database path.
+
+Database path override order is strict: `--db`, `GO_RALPH_DB`/`GORALPH_DB`, config `db`, `$XDG_DATA_HOME/goralph/ralph.db`, then `~/.local/share/goralph/ralph.db`. goralph creates the database parent directory when needed.
+
 ## Quickstart
 
 Run commands from anywhere inside a Git worktree:
