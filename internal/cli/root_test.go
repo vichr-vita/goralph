@@ -884,6 +884,64 @@ func TestRunOneCreatesAndFinishesRunRecord(t *testing.T) {
 	}
 }
 
+func TestRunListPrintsRuns(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	prdPath := writePRDFile(t, `[
+		{"category":"runner","description":"list me","steps":["one"],"passes":false}
+	]`)
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	runID := seedRun(t, dbPath, repoRoot, tasks[0].id)
+
+	stdout := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "run", "list"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run list: %v", err)
+	}
+	for _, want := range []string{"ID\tTASK\tSTATUS", strconv.FormatInt(runID, 10), "succeeded", "session-123"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("run list output missing %q:\n%s", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "run", "list"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run list JSON: %v", err)
+	}
+	var out []runOutput
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode run list JSON %q: %v", stdout.String(), err)
+	}
+	if len(out) != 1 || out[0].ID != runID || out[0].SessionID != "session-123" {
+		t.Fatalf("run list JSON = %+v", out)
+	}
+}
+
 func TestRunShowPrintsMetadataProgressAndSessionPath(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -940,6 +998,99 @@ func TestRunShowPrintsMetadataProgressAndSessionPath(t *testing.T) {
 	}
 	if out.SessionID != "session-123" || out.SessionPath != "/tmp/session.jsonl" || len(out.Progress) != 1 || out.Progress[0].Summary != "agent made progress" {
 		t.Fatalf("run show JSON = %+v", out)
+	}
+}
+
+func TestRunOpenAndExportUsePiSessionMetadata(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	prdPath := writePRDFile(t, `[
+		{"category":"runner","description":"open me","steps":["one"],"passes":false}
+	]`)
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	runID := seedRun(t, dbPath, repoRoot, tasks[0].id)
+
+	argsPath := filepath.Join(tempDir, "args.txt")
+	runnerPath := filepath.Join(tempDir, "fake-pi.sh")
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \""+argsPath+"\"\n"), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "open", strconv.FormatInt(runID, 10)})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run open: %v", err)
+	}
+	if got := strings.TrimSpace(readTestFile(t, argsPath)); got != "--session\n/tmp/session.jsonl" {
+		t.Fatalf("open args = %q", got)
+	}
+
+	outPath := filepath.Join(tempDir, "session.html")
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "export", strconv.FormatInt(runID, 10), outPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run export: %v", err)
+	}
+	if got := strings.TrimSpace(readTestFile(t, argsPath)); got != "--export\n/tmp/session.jsonl\n"+outPath {
+		t.Fatalf("export args = %q", got)
+	}
+}
+
+func TestRunOpenErrorsWithoutSessionMetadata(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	prdPath := writePRDFile(t, `[
+		{"category":"runner","description":"missing session","steps":["one"],"passes":false}
+	]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	runID := seedRunWithoutSession(t, dbPath, repoRoot, tasks[0].id)
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "run", "open", strconv.FormatInt(runID, 10)})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("execute run open without session succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "no stored session metadata") {
+		t.Fatalf("run open error = %q", err.Error())
 	}
 }
 
@@ -1095,6 +1246,30 @@ func seedRun(t *testing.T, dbPath string, rootPath string, taskID int64) int64 {
 	result, err := database.Exec("INSERT INTO run (project_id, task_id, runner_name, runner_model, session_id, session_path, status, exit_code, pid, host, started_at, finished_at) VALUES (?, ?, 'pi', 'test-model', 'session-123', '/tmp/session.jsonl', 'succeeded', 0, 42, 'test-host', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", projectID, taskID)
 	if err != nil {
 		t.Fatalf("insert run: %v", err)
+	}
+	runID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("read run id: %v", err)
+	}
+	return runID
+}
+
+func seedRunWithoutSession(t *testing.T, dbPath string, rootPath string, taskID int64) int64 {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	var projectID int64
+	if err := database.QueryRow("SELECT id FROM project WHERE root_path = ?", rootPath).Scan(&projectID); err != nil {
+		t.Fatalf("query project id: %v", err)
+	}
+	result, err := database.Exec("INSERT INTO run (project_id, task_id, runner_name, status, host, started_at, finished_at) VALUES (?, ?, 'pi', 'succeeded', 'test-host', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", projectID, taskID)
+	if err != nil {
+		t.Fatalf("insert run without session: %v", err)
 	}
 	runID, err := result.LastInsertId()
 	if err != nil {
@@ -1367,6 +1542,15 @@ func assertGooseVersionRecorded(t *testing.T, dbPath string) {
 	if count != 1 {
 		t.Fatalf("goose version rows = %d, want 1", count)
 	}
+}
+
+func readTestFile(t *testing.T, path string) string {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(contents)
 }
 
 func assertTableMissing(t *testing.T, dbPath string, table string) {

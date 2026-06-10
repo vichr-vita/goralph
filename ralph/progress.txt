@@ -21,3 +21,4 @@
 2026-06-10T15:13:25Z - Implemented Pi runner headless default (-p), interactive TUI mode without print flag, stdout/stderr capture, and exit metadata tests. Checks: LSP diagnostics, go test ./internal/runner/..., go test ./... passed.
 2026-06-10 runner: streamed live output by default, added quiet request flag, session metadata discovery, and run show metadata/progress/session display.
 runner: tracked agent turns as run records; checks: sqlc generate, gofmt, go test ./internal/cli selected, go test ./...
+2026-06-10T16:44:44Z Implemented run list/show/open/export session inspection commands.

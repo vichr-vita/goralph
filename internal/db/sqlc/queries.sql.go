@@ -602,6 +602,56 @@ func (q *Queries) ListProgressByRun(ctx context.Context, arg ListProgressByRunPa
 	return items, nil
 }
 
+const listRunsByProject = `-- name: ListRunsByProject :many
+SELECT id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at
+FROM run
+WHERE project_id = ?
+ORDER BY COALESCE(started_at, created_at) DESC, id DESC
+`
+
+func (q *Queries) ListRunsByProject(ctx context.Context, projectID int64) ([]Run, error) {
+	rows, err := q.db.QueryContext(ctx, listRunsByProject, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Run
+	for rows.Next() {
+		var i Run
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.TaskID,
+			&i.RunnerName,
+			&i.RunnerVersion,
+			&i.RunnerModel,
+			&i.SessionID,
+			&i.SessionPath,
+			&i.Status,
+			&i.ExitCode,
+			&i.ExitSignal,
+			&i.ExitError,
+			&i.Pid,
+			&i.Host,
+			&i.HeartbeatAt,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTaskPRDRowsByProject = `-- name: ListTaskPRDRowsByProject :many
 SELECT
     t.id,

@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 
 	"goralph/internal/db"
 	"goralph/internal/db/sqlc"
@@ -51,7 +53,10 @@ func newRunCommand() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&quiet, "quiet", false, "suppress live runner output")
 	cmd.AddCommand(newRunOneCommand(&quiet))
 	cmd.AddCommand(newRunAllCommand(&quiet))
+	cmd.AddCommand(newRunListCommand())
 	cmd.AddCommand(newRunShowCommand())
+	cmd.AddCommand(newRunOpenCommand())
+	cmd.AddCommand(newRunExportCommand())
 
 	return cmd
 }
@@ -220,6 +225,30 @@ func nullInt(value int64, valid bool) sql.NullInt64 {
 	return sql.NullInt64{Int64: value, Valid: valid}
 }
 
+func newRunListCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List runs for this project",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			project, err := projectFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+			settings, err := settingsFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			runs, err := listRuns(cmd.Context(), settings.DBPath, project.ID)
+			if err != nil {
+				return err
+			}
+			return writeRunList(cmd, runs)
+		},
+	}
+}
+
 func newRunShowCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "show <id>",
@@ -249,12 +278,96 @@ func newRunShowCommand() *cobra.Command {
 	}
 }
 
+func newRunOpenCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "open <id>",
+		Short: "Open a run session with pi",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := parseRunID(args[0])
+			if err != nil {
+				return err
+			}
+			project, err := projectFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+			settings, err := settingsFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+			run, err := showRun(cmd.Context(), settings.DBPath, project.ID, id)
+			if err != nil {
+				return err
+			}
+			ref, err := runSessionRef(run)
+			if err != nil {
+				return err
+			}
+			return runPiCommand(cmd.Context(), project, settings.RunnerCommand, []string{"--session", ref}, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+}
+
+func newRunExportCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "export <id> [file]",
+		Short: "Export a run session with pi",
+		Args:  cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := parseRunID(args[0])
+			if err != nil {
+				return err
+			}
+			project, err := projectFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+			settings, err := settingsFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+			run, err := showRun(cmd.Context(), settings.DBPath, project.ID, id)
+			if err != nil {
+				return err
+			}
+			ref, err := runSessionRef(run)
+			if err != nil {
+				return err
+			}
+			piArgs := []string{"--export", ref}
+			if len(args) == 2 {
+				piArgs = append(piArgs, args[1])
+			}
+			return runPiCommand(cmd.Context(), project, settings.RunnerCommand, piArgs, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+}
+
 func parseRunID(value string) (int64, error) {
 	id, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || id <= 0 {
 		return 0, fmt.Errorf("invalid run id %q", value)
 	}
 	return id, nil
+}
+
+func listRuns(ctx context.Context, dbPath string, projectID int64) ([]runOutput, error) {
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+	defer database.Close()
+
+	rows, err := sqlc.New(database).ListRunsByProject(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list runs: %w", err)
+	}
+	runs := make([]runOutput, 0, len(rows))
+	for _, row := range rows {
+		runs = append(runs, runOutputFromRow(row))
+	}
+	return runs, nil
 }
 
 func showRun(ctx context.Context, dbPath string, projectID int64, runID int64) (runOutput, error) {
@@ -265,12 +378,9 @@ func showRun(ctx context.Context, dbPath string, projectID int64, runID int64) (
 	defer database.Close()
 
 	queries := sqlc.New(database)
-	run, err := queries.GetRunByProjectAndID(ctx, sqlc.GetRunByProjectAndIDParams{ProjectID: projectID, ID: runID})
+	run, err := loadRunRow(ctx, queries, projectID, runID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return runOutput{}, fmt.Errorf("run %d not found", runID)
-		}
-		return runOutput{}, fmt.Errorf("load run %d: %w", runID, err)
+		return runOutput{}, err
 	}
 	progressRows, err := queries.ListProgressByRun(ctx, sqlc.ListProgressByRunParams{ProjectID: projectID, RunID: sql.NullInt64{Int64: runID, Valid: true}})
 	if err != nil {
@@ -283,6 +393,39 @@ func showRun(ctx context.Context, dbPath string, projectID int64, runID int64) (
 		out.Progress = append(out.Progress, progressOutputFromRow(row))
 	}
 	return out, nil
+}
+
+func loadRunRow(ctx context.Context, queries *sqlc.Queries, projectID int64, runID int64) (sqlc.Run, error) {
+	run, err := queries.GetRunByProjectAndID(ctx, sqlc.GetRunByProjectAndIDParams{ProjectID: projectID, ID: runID})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return sqlc.Run{}, fmt.Errorf("run %d not found", runID)
+		}
+		return sqlc.Run{}, fmt.Errorf("load run %d: %w", runID, err)
+	}
+	return run, nil
+}
+
+func runSessionRef(run runOutput) (string, error) {
+	if run.SessionPath != "" {
+		return run.SessionPath, nil
+	}
+	if run.SessionID != "" {
+		return run.SessionID, nil
+	}
+	return "", fmt.Errorf("run %d has no stored session metadata", run.ID)
+}
+
+func runPiCommand(ctx context.Context, project sqlc.Project, command string, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
+	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.Dir = project.RootPath
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s %s failed: %w", command, strings.Join(args, " "), err)
+	}
+	return nil
 }
 
 func runOutputFromRow(row sqlc.Run) runOutput {
@@ -323,6 +466,38 @@ func runOutputFromRow(row sqlc.Run) runOutput {
 		out.FinishedAt = row.FinishedAt.String
 	}
 	return out
+}
+
+func writeRunList(cmd *cobra.Command, runs []runOutput) error {
+	if jsonOutputFromContext(cmd.Context()) {
+		encoder := json.NewEncoder(cmd.OutOrStdout())
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(runs)
+	}
+	if len(runs) == 0 {
+		_, err := fmt.Fprintln(cmd.OutOrStdout(), "No runs")
+		return err
+	}
+	if _, err := fmt.Fprintln(cmd.OutOrStdout(), "ID\tTASK\tSTATUS\tRUNNER\tMODEL\tSESSION\tSTARTED\tFINISHED"); err != nil {
+		return err
+	}
+	for _, run := range runs {
+		task := "-"
+		if run.TaskID != nil {
+			task = fmt.Sprintf("%d", *run.TaskID)
+		}
+		session := run.SessionID
+		if session == "" {
+			session = run.SessionPath
+		}
+		if session == "" {
+			session = "-"
+		}
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", run.ID, task, run.Status, run.RunnerName, emptyValue(run.RunnerModel), session, emptyValue(run.StartedAt), emptyValue(run.FinishedAt)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeRun(cmd *cobra.Command, run runOutput) error {

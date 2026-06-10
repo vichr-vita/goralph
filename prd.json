@@ -289,7 +289,7 @@
       "Implement goralph run export <id> [file] using Pi session export support",
       "Show clear errors when a run has no stored session metadata"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
