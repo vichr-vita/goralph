@@ -8,7 +8,7 @@ before:
 
 builds:
   - id: goralph
-    main: ./cmd/goralph
+    main: .
     binary: goralph
     env:
       - CGO_ENABLED=0
