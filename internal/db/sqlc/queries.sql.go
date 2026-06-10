@@ -22,19 +22,25 @@ func (q *Queries) CountTasksByProject(ctx context.Context, projectID int64) (int
 }
 
 const createProgress = `-- name: CreateProgress :one
-INSERT INTO progress (project_id, task_id, summary)
-VALUES (?, ?, ?)
+INSERT INTO progress (project_id, task_id, run_id, summary)
+VALUES (?, ?, ?, ?)
 RETURNING id, project_id, task_id, run_id, summary, created_at, updated_at
 `
 
 type CreateProgressParams struct {
 	ProjectID int64
 	TaskID    sql.NullInt64
+	RunID     sql.NullInt64
 	Summary   string
 }
 
 func (q *Queries) CreateProgress(ctx context.Context, arg CreateProgressParams) (Progress, error) {
-	row := q.db.QueryRowContext(ctx, createProgress, arg.ProjectID, arg.TaskID, arg.Summary)
+	row := q.db.QueryRowContext(ctx, createProgress,
+		arg.ProjectID,
+		arg.TaskID,
+		arg.RunID,
+		arg.Summary,
+	)
 	var i Progress
 	err := row.Scan(
 		&i.ID,
@@ -162,6 +168,41 @@ func (q *Queries) DeleteTasksByProject(ctx context.Context, projectID int64) err
 	return err
 }
 
+const getActiveRunByProject = `-- name: GetActiveRunByProject :one
+SELECT id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at
+FROM run
+WHERE project_id = ? AND status = 'running'
+ORDER BY COALESCE(started_at, created_at) DESC, id DESC
+LIMIT 1
+`
+
+func (q *Queries) GetActiveRunByProject(ctx context.Context, projectID int64) (Run, error) {
+	row := q.db.QueryRowContext(ctx, getActiveRunByProject, projectID)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.RunnerName,
+		&i.RunnerVersion,
+		&i.RunnerModel,
+		&i.SessionID,
+		&i.SessionPath,
+		&i.Status,
+		&i.ExitCode,
+		&i.ExitSignal,
+		&i.ExitError,
+		&i.Pid,
+		&i.Host,
+		&i.HeartbeatAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getProjectByRootPath = `-- name: GetProjectByRootPath :one
 SELECT id, name, root_path, description, created_at, updated_at
 FROM project
@@ -224,6 +265,87 @@ type ListLatestProgressByTaskParams struct {
 
 func (q *Queries) ListLatestProgressByTask(ctx context.Context, arg ListLatestProgressByTaskParams) ([]Progress, error) {
 	rows, err := q.db.QueryContext(ctx, listLatestProgressByTask, arg.TaskID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Progress
+	for rows.Next() {
+		var i Progress
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.TaskID,
+			&i.RunID,
+			&i.Summary,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProgressByProject = `-- name: ListProgressByProject :many
+SELECT id, project_id, task_id, run_id, summary, created_at, updated_at
+FROM progress
+WHERE project_id = ?
+ORDER BY created_at DESC, id DESC
+`
+
+func (q *Queries) ListProgressByProject(ctx context.Context, projectID int64) ([]Progress, error) {
+	rows, err := q.db.QueryContext(ctx, listProgressByProject, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Progress
+	for rows.Next() {
+		var i Progress
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.TaskID,
+			&i.RunID,
+			&i.Summary,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProgressByProjectAndTask = `-- name: ListProgressByProjectAndTask :many
+SELECT id, project_id, task_id, run_id, summary, created_at, updated_at
+FROM progress
+WHERE project_id = ? AND task_id = ?
+ORDER BY created_at DESC, id DESC
+`
+
+type ListProgressByProjectAndTaskParams struct {
+	ProjectID int64
+	TaskID    sql.NullInt64
+}
+
+func (q *Queries) ListProgressByProjectAndTask(ctx context.Context, arg ListProgressByProjectAndTaskParams) ([]Progress, error) {
+	rows, err := q.db.QueryContext(ctx, listProgressByProjectAndTask, arg.ProjectID, arg.TaskID)
 	if err != nil {
 		return nil, err
 	}

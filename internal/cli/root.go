@@ -60,6 +60,7 @@ func NewRootCommand() *cobra.Command {
 	cmd.AddCommand(newProjectCommand())
 	cmd.AddCommand(newPRDCommand())
 	cmd.AddCommand(newTaskCommand())
+	cmd.AddCommand(newProgressCommand())
 
 	return cmd
 }

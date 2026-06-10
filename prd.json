@@ -216,7 +216,7 @@
       "Implement goralph progress list with optional --task filter",
       "Support --json output"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

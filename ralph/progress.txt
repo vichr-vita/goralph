@@ -15,3 +15,4 @@
 2026-06-10: implemented task list/show CLI with status filter, JSON, steps, timestamps, progress report, latest progress entries.
 2026-06-10 16:47 +0200 - Implemented task add/update CLI with ordered steps/status validation; verified sqlc generate, gofmt, go test ./..., focused go run CLI add/update/invalid-status checks.
 2026-06-10: implemented task lifecycle shortcut commands; added start/pass/fail/block/unblock, reason progress, update pending path; checks pass.
+2026-06-10: Implemented progress add/list with optional task filter, JSON output, project scoping, active run association; tests and CLI smoke pass.

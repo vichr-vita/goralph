@@ -39,6 +39,8 @@ type taskStepOutput struct {
 
 type progressOutput struct {
 	ID        int64  `json:"id"`
+	TaskID    *int64 `json:"task_id,omitempty"`
+	RunID     *int64 `json:"run_id,omitempty"`
 	Summary   string `json:"summary"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
@@ -559,12 +561,7 @@ func loadTaskDetails(ctx context.Context, queries *sqlc.Queries, task sqlc.Task)
 		})
 	}
 	for _, item := range progress {
-		out.LatestProgress = append(out.LatestProgress, progressOutput{
-			ID:        item.ID,
-			Summary:   item.Summary,
-			CreatedAt: item.CreatedAt,
-			UpdatedAt: item.UpdatedAt,
-		})
+		out.LatestProgress = append(out.LatestProgress, progressOutputFromRow(item))
 	}
 	return out, nil
 }

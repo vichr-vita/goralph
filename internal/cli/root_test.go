@@ -720,6 +720,99 @@ func TestTaskShowPrintsDetailsAndLatestProgress(t *testing.T) {
 	}
 }
 
+func TestProgressAddAndListSupportsTaskFilterJSONAndActiveRun(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	prdPath := writePRDFile(t, `[
+		{"category":"cli","description":"first task","steps":["one"],"passes":false},
+		{"category":"db","description":"second task","steps":[],"passes":false}
+	]`)
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 2 {
+		t.Fatalf("task count = %d, want 2", len(tasks))
+	}
+	runID := seedActiveRun(t, dbPath, repoRoot, tasks[0].id)
+
+	stdout := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "progress", "add", "--task", strconv.FormatInt(tasks[0].id, 10), "--summary", "worked on task"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute progress add task: %v", err)
+	}
+	var taskProgress progressOutput
+	if err := json.Unmarshal(stdout.Bytes(), &taskProgress); err != nil {
+		t.Fatalf("decode task progress JSON %q: %v", stdout.String(), err)
+	}
+	if taskProgress.TaskID == nil || *taskProgress.TaskID != tasks[0].id || taskProgress.RunID == nil || *taskProgress.RunID != runID || taskProgress.Summary != "worked on task" {
+		t.Fatalf("task progress JSON = %+v, want task %d run %d", taskProgress, tasks[0].id, runID)
+	}
+
+	stdout.Reset()
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "progress", "add", "--summary", "project note"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute progress add project: %v", err)
+	}
+	var projectProgress progressOutput
+	if err := json.Unmarshal(stdout.Bytes(), &projectProgress); err != nil {
+		t.Fatalf("decode project progress JSON %q: %v", stdout.String(), err)
+	}
+	if projectProgress.TaskID != nil || projectProgress.RunID == nil || *projectProgress.RunID != runID || projectProgress.Summary != "project note" {
+		t.Fatalf("project progress JSON = %+v, want no task and run %d", projectProgress, runID)
+	}
+
+	stdout.Reset()
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "progress", "list"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute progress list: %v", err)
+	}
+	var all []progressOutput
+	if err := json.Unmarshal(stdout.Bytes(), &all); err != nil {
+		t.Fatalf("decode progress list JSON %q: %v", stdout.String(), err)
+	}
+	if len(all) != 2 || all[0].Summary != "project note" || all[1].Summary != "worked on task" {
+		t.Fatalf("progress list = %+v, want newest project note then task progress", all)
+	}
+
+	stdout.Reset()
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "progress", "list", "--task", strconv.FormatInt(tasks[0].id, 10)})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute progress list --task: %v", err)
+	}
+	var filtered []progressOutput
+	if err := json.Unmarshal(stdout.Bytes(), &filtered); err != nil {
+		t.Fatalf("decode progress filter JSON %q: %v", stdout.String(), err)
+	}
+	if len(filtered) != 1 || filtered[0].Summary != "worked on task" || filtered[0].TaskID == nil || *filtered[0].TaskID != tasks[0].id {
+		t.Fatalf("filtered progress = %+v, want only task progress", filtered)
+	}
+}
+
 func TestDBPathPrintsResolvedDatabasePath(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -854,6 +947,30 @@ func seedTaskProgress(t *testing.T, dbPath string, taskID int64, progressReport 
 			t.Fatalf("insert task progress: %v", err)
 		}
 	}
+}
+
+func seedActiveRun(t *testing.T, dbPath string, rootPath string, taskID int64) int64 {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	var projectID int64
+	if err := database.QueryRow("SELECT id FROM project WHERE root_path = ?", rootPath).Scan(&projectID); err != nil {
+		t.Fatalf("query project id: %v", err)
+	}
+	result, err := database.Exec("INSERT INTO run (project_id, task_id, runner_name, status, started_at) VALUES (?, ?, 'test-runner', 'running', CURRENT_TIMESTAMP)", projectID, taskID)
+	if err != nil {
+		t.Fatalf("insert active run: %v", err)
+	}
+	runID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("read active run id: %v", err)
+	}
+	return runID
 }
 
 func fetchTaskProgressSummaries(t *testing.T, dbPath string, taskID int64) []string {
