@@ -2,3 +2,4 @@
 2026-06-10: Added approved internal package layout with thin cmd/goralph main, internal cli/config wiring, placeholder internal packages, and passing go test ./....
 2026-06-10: Implemented database path resolution precedence (--db, GO_RALPH_DB, XDG_DATA_HOME, fallback ~/.local/share) with parent directory creation and focused tests.
 2026-06-10: Added sqlc SQLite configuration, generated type-safe Ping query code, modernc.org/sqlite database opener, and build-verifying DB test.
+2026-06-10: Added embedded Goose migrations, automatic startup migration, version recording, and fresh database migration tests.

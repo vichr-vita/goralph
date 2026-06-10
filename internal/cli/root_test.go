@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -68,6 +69,25 @@ func TestRootCommandUsesDatabaseFlag(t *testing.T) {
 		t.Fatalf("stat db parent: %v", err)
 	} else if !info.IsDir() {
 		t.Fatalf("db parent is not directory")
+	}
+	assertGooseVersionRecorded(t, dbPath)
+}
+
+func assertGooseVersionRecorded(t *testing.T, dbPath string) {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open migrated database: %v", err)
+	}
+	defer database.Close()
+
+	var count int
+	if err := database.QueryRow("SELECT COUNT(*) FROM goose_db_version WHERE version_id = 1 AND is_applied = 1").Scan(&count); err != nil {
+		t.Fatalf("query goose version: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("goose version rows = %d, want 1", count)
 	}
 }
 

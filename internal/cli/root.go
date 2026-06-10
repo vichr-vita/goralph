@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"context"
+	"fmt"
+
 	"goralph/internal/config"
+	"goralph/internal/db"
 
 	"github.com/spf13/cobra"
 )
@@ -15,8 +19,11 @@ func NewRootCommand() *cobra.Command {
 		Use:   "goralph",
 		Short: "Run Ralph loops for Go projects",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			_, err := config.Load(cfgFile, dbPath)
-			return err
+			settings, err := config.Load(cfgFile, dbPath)
+			if err != nil {
+				return err
+			}
+			return migrateDatabase(cmd.Context(), settings.DBPath)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
@@ -27,4 +34,18 @@ func NewRootCommand() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&dbPath, "db", "", "SQLite database path")
 
 	return cmd
+}
+
+func migrateDatabase(ctx context.Context, path string) error {
+	database, err := db.Open(path)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer database.Close()
+
+	if err := db.Migrate(ctx, database); err != nil {
+		return err
+	}
+
+	return nil
 }
