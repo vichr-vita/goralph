@@ -126,7 +126,7 @@
       "Support runner and feedback command configuration",
       "Allow db path override via flag, env, and user config"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "cli",
