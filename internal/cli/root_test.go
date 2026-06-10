@@ -140,6 +140,135 @@ func TestRootCommandUsesDatabaseFlag(t *testing.T) {
 	assertGooseVersionRecorded(t, dbPath)
 }
 
+func TestCommandsUseTempGoRalphDBAndIsolatedConfig(t *testing.T) {
+	dbPath := isolateCommandEnv(t)
+	repoRoot, workDir := createTestGitWorkDir(t, "env-repo")
+	chdir(t, workDir)
+
+	stdout := &bytes.Buffer{}
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--json", "project", "info"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute project info with GO_RALPH_DB: %v", err)
+	}
+	var project map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &project); err != nil {
+		t.Fatalf("decode project info JSON %q: %v", stdout.String(), err)
+	}
+	for _, key := range []string{"id", "name", "root_path", "description", "created_at", "updated_at", "outcome"} {
+		if _, ok := project[key]; !ok {
+			t.Fatalf("project JSON missing %q: %#v", key, project)
+		}
+	}
+	if project["name"] != "env-repo" || project["root_path"] != repoRoot || project["outcome"] != string(OutcomeSuccess) {
+		t.Fatalf("project JSON = %#v, want env repo from temp GO_RALPH_DB", project)
+	}
+	assertProject(t, dbPath, repoRoot, "env-repo")
+
+	stdout.Reset()
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--json", "task", "add", "--category", "cli", "--description", "env task", "--step", "one", "--step", "two"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute task add with GO_RALPH_DB: %v", err)
+	}
+	var task map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &task); err != nil {
+		t.Fatalf("decode task add JSON %q: %v", stdout.String(), err)
+	}
+	for _, key := range []string{"id", "category", "description", "status", "progress_report", "created_at", "updated_at", "steps", "latest_progress", "outcome"} {
+		if _, ok := task[key]; !ok {
+			t.Fatalf("task JSON missing %q: %#v", key, task)
+		}
+	}
+	steps, ok := task["steps"].([]any)
+	if !ok || len(steps) != 2 {
+		t.Fatalf("task steps JSON = %#v, want two steps", task["steps"])
+	}
+	if task["category"] != "cli" || task["description"] != "env task" || task["status"] != "pending" || task["outcome"] != string(OutcomeSuccess) {
+		t.Fatalf("task JSON = %#v, want pending cli task", task)
+	}
+	stored := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(stored) != 1 || stored[0].description != "env task" || stored[0].steps != "one,two" {
+		t.Fatalf("stored tasks = %+v, want env task in GO_RALPH_DB", stored)
+	}
+}
+
+func TestProjectResolutionUsesNearestTempGitRepository(t *testing.T) {
+	dbPath := isolateCommandEnv(t)
+	repoOne, workOne := createTestGitWorkDir(t, "repo-one")
+	repoTwo, workTwo := createTestGitWorkDir(t, "repo-two")
+
+	chdir(t, workOne)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"project", "init", "--name", "One"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute project init repo one: %v", err)
+	}
+
+	chdir(t, workTwo)
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"project", "init", "--name", "Two"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute project init repo two: %v", err)
+	}
+
+	assertProjectDetails(t, dbPath, repoOne, "One", "", 1)
+	assertProjectDetails(t, dbPath, repoTwo, "Two", "", 1)
+}
+
+func TestNonTTYDestructiveCommandsRequireExplicitFlags(t *testing.T) {
+	dbPath := isolateCommandEnv(t)
+	repoRoot, workDir := createTestGitWorkDir(t, "guarded-repo")
+	chdir(t, workDir)
+
+	firstPath := writePRDFile(t, `[{"category":"cli","description":"keep me","steps":["one"],"passes":false}]`)
+	secondPath := writePRDFile(t, `[{"category":"cli","description":"replace me","steps":["two"],"passes":false}]`)
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"prd", "import", firstPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute first prd import: %v", err)
+	}
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"prd", "import", secondPath})
+	cmd.SetIn(bytes.NewBufferString("y\n"))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--replace or --append") {
+		t.Fatalf("non-TTY prd import error = %v, want explicit mode refusal", err)
+	}
+	stored := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(stored) != 1 || stored[0].description != "keep me" {
+		t.Fatalf("stored tasks after refused non-TTY import = %+v, want original task", stored)
+	}
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"db", "reset"})
+	cmd.SetIn(bytes.NewBufferString("y\n"))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("db reset without force error = %v, want force refusal", err)
+	}
+	stored = fetchImportedTasks(t, dbPath, repoRoot)
+	if len(stored) != 1 || stored[0].description != "keep me" {
+		t.Fatalf("stored tasks after refused reset = %+v, want original task", stored)
+	}
+}
+
 func TestRootCommandAutoCreatesCurrentProject(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -2967,4 +3096,30 @@ func isolateDatabaseEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("GO_RALPH_DB", "")
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+}
+
+func isolateCommandEnv(t *testing.T) string {
+	t.Helper()
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	xdgConfigHome := filepath.Join(tempDir, "xdg-config")
+	configDir := filepath.Join(xdgConfigHome, "goralph")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("create fake user config dir: %v", err)
+	}
+	poisonDBPath := filepath.Join(tempDir, "poison", "real-user-config.db")
+	fakeConfig := "db: " + strconv.Quote(poisonDBPath) + "\nrunner_command: /bin/false\nfeedback_commands:\n  - exit 99\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(fakeConfig), 0o600); err != nil {
+		t.Fatalf("write fake user config: %v", err)
+	}
+
+	t.Setenv("GO_RALPH_DB", dbPath)
+	t.Setenv("GORALPH_DB", "")
+	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tempDir, "xdg-data"))
+	t.Setenv("HOME", filepath.Join(tempDir, "home"))
+	return dbPath
 }

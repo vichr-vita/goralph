@@ -36,3 +36,4 @@ Implemented run one --task targeting with current-project validation and forced-
 2026-06-10: Implemented NDJSON run events for --json run commands; run_started/task_selected/progress_added/runner_output/run_completed/run_failed events; tests pass.
 2026-06-10 Add PRD validation/import temp DB coverage; go test ./... passes.
 2026-06-10: Added temp SQLite integration tests for Goose migrations, schema constraints, foreign keys, and sqlc workflows; enabled FK enforcement in db.Open.
+2026-06-10: Added CLI command tests using temp GO_RALPH_DB, isolated config, temp git repos, JSON shape checks, and non-TTY destructive guards.

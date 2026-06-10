@@ -528,7 +528,7 @@
       "Test non-TTY destructive command protections",
       "Verify command tests do not depend on real user config"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "testing",
