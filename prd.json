@@ -241,7 +241,7 @@
       "Allow runner command and args to be configured",
       "Use Pi as the default runner when no custom runner is configured"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "runner",

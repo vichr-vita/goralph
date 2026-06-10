@@ -46,6 +46,66 @@ func TestLoadMergesUserAndProjectConfig(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultsToPiRunner(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateConfigEnv(t)
+
+	settings, err := Load("", "")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if settings.Runner != defaultRunnerCommand {
+		t.Fatalf("runner = %q, want %q", settings.Runner, defaultRunnerCommand)
+	}
+	if settings.RunnerCommand != defaultRunnerCommand {
+		t.Fatalf("runner command = %q, want %q", settings.RunnerCommand, defaultRunnerCommand)
+	}
+	if !reflect.DeepEqual(settings.RunnerArgs, []string{defaultRunnerPromptFlag}) {
+		t.Fatalf("runner args = %#v, want prompt flag", settings.RunnerArgs)
+	}
+}
+
+func TestLoadReadsRunnerCommandAndArgs(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, configPath, "runner:\n  command: custom-runner\n  args:\n    - --one\n    - two\n")
+
+	settings, err := Load(configPath, "")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if settings.RunnerCommand != "custom-runner" {
+		t.Fatalf("runner command = %q, want custom-runner", settings.RunnerCommand)
+	}
+	if !reflect.DeepEqual(settings.RunnerArgs, []string{"--one", "two"}) {
+		t.Fatalf("runner args = %#v, want configured args", settings.RunnerArgs)
+	}
+}
+
+func TestLoadReadsFlatRunnerCommandAndArgs(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, configPath, "runner_command: flat-runner\nrunner_args:\n  - --flat\n")
+
+	settings, err := Load(configPath, "")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if settings.RunnerCommand != "flat-runner" {
+		t.Fatalf("runner command = %q, want flat-runner", settings.RunnerCommand)
+	}
+	if !reflect.DeepEqual(settings.RunnerArgs, []string{"--flat"}) {
+		t.Fatalf("runner args = %#v, want flat args", settings.RunnerArgs)
+	}
+}
+
 func TestLoadUsesUserConfigDatabasePath(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -194,6 +254,8 @@ func isolateConfigEnv(t *testing.T) {
 	t.Setenv(databaseEnvVar, "")
 	t.Setenv(viperDatabaseEnvVar, "")
 	t.Setenv("GORALPH_RUNNER", "")
+	t.Setenv("GORALPH_RUNNER_COMMAND", "")
+	t.Setenv("GORALPH_RUNNER_ARGS", "")
 	t.Setenv("GORALPH_FEEDBACK_COMMANDS", "")
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))

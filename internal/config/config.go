@@ -11,20 +11,28 @@ import (
 )
 
 const (
-	databaseEnvVar      = "GO_RALPH_DB"
-	viperDatabaseEnvVar = "GORALPH_DB"
-	databaseDir         = "goralph"
-	databaseFile        = "ralph.db"
-	configDir           = "goralph"
-	configFile          = "config.yaml"
-	projectConfigDir    = ".ralph"
-	feedbackCommandsKey = "feedback_commands"
+	databaseEnvVar          = "GO_RALPH_DB"
+	viperDatabaseEnvVar     = "GORALPH_DB"
+	databaseDir             = "goralph"
+	databaseFile            = "ralph.db"
+	configDir               = "goralph"
+	configFile              = "config.yaml"
+	projectConfigDir        = ".ralph"
+	feedbackCommandsKey     = "feedback_commands"
+	runnerCommandKey        = "runner.command"
+	runnerCommandFlatKey    = "runner_command"
+	runnerArgsKey           = "runner.args"
+	runnerArgsFlatKey       = "runner_args"
+	defaultRunnerCommand    = "pi"
+	defaultRunnerPromptFlag = "-p"
 )
 
 // Settings contains resolved configuration values.
 type Settings struct {
 	DBPath           string
 	Runner           string
+	RunnerCommand    string
+	RunnerArgs       []string
 	FeedbackCommands []string
 }
 
@@ -59,12 +67,20 @@ func Load(cfgFile string, dbPath string) (*Settings, error) {
 	if err != nil {
 		return nil, err
 	}
+	runnerCommand := resolveRunnerCommand(v)
+	runnerArgs := resolveRunnerArgs(v)
+
 	v.Set("db", resolvedDBPath)
+	v.Set(runnerCommandKey, runnerCommand)
+	v.Set(runnerArgsKey, runnerArgs)
+	v.Set("runner", runnerCommand)
 	v.Set(feedbackCommandsKey, feedbackCommands(v))
 
 	return &Settings{
 		DBPath:           resolvedDBPath,
-		Runner:           v.GetString("runner"),
+		Runner:           runnerCommand,
+		RunnerCommand:    runnerCommand,
+		RunnerArgs:       runnerArgs,
 		FeedbackCommands: v.GetStringSlice(feedbackCommandsKey),
 	}, nil
 }
@@ -155,6 +171,24 @@ func findProjectConfigPath() (string, error) {
 		}
 		cwd = parent
 	}
+}
+
+func resolveRunnerCommand(v *viper.Viper) string {
+	for _, key := range []string{runnerCommandKey, runnerCommandFlatKey, "runner"} {
+		if command := v.GetString(key); command != "" {
+			return command
+		}
+	}
+	return defaultRunnerCommand
+}
+
+func resolveRunnerArgs(v *viper.Viper) []string {
+	for _, key := range []string{runnerArgsKey, runnerArgsFlatKey} {
+		if v.IsSet(key) {
+			return v.GetStringSlice(key)
+		}
+	}
+	return []string{defaultRunnerPromptFlag}
 }
 
 func feedbackCommands(v *viper.Viper) []string {
