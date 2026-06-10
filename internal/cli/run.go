@@ -14,6 +14,7 @@ import (
 
 	"goralph/internal/db"
 	"goralph/internal/db/sqlc"
+	gitrepo "goralph/internal/git"
 	"goralph/internal/loop"
 	"goralph/internal/runner"
 	"goralph/internal/runner/pi"
@@ -45,14 +46,16 @@ type runOutput struct {
 
 func newRunCommand() *cobra.Command {
 	var quiet bool
+	var allowDirty bool
 
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Inspect runner sessions",
 	}
 	cmd.PersistentFlags().BoolVar(&quiet, "quiet", false, "suppress live runner output")
-	cmd.AddCommand(newRunOneCommand(&quiet))
-	cmd.AddCommand(newRunAllCommand(&quiet))
+	cmd.PersistentFlags().BoolVar(&allowDirty, "allow-dirty", false, "run agents without requiring a clean git worktree")
+	cmd.AddCommand(newRunOneCommand(&quiet, &allowDirty))
+	cmd.AddCommand(newRunAllCommand(&quiet, &allowDirty))
 	cmd.AddCommand(newRunListCommand())
 	cmd.AddCommand(newRunShowCommand())
 	cmd.AddCommand(newRunOpenCommand())
@@ -61,7 +64,7 @@ func newRunCommand() *cobra.Command {
 	return cmd
 }
 
-func newRunOneCommand(quiet *bool) *cobra.Command {
+func newRunOneCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 	var taskID int64
 	cmd := &cobra.Command{
 		Use:   "one",
@@ -73,6 +76,9 @@ func newRunOneCommand(quiet *bool) *cobra.Command {
 			}
 			settings, err := settingsFromContext(cmd.Context())
 			if err != nil {
+				return err
+			}
+			if err := requireCleanWorktreeBeforeAgent(cmd.Context(), project, *allowDirty); err != nil {
 				return err
 			}
 
@@ -99,7 +105,7 @@ func newRunOneCommand(quiet *bool) *cobra.Command {
 	return cmd
 }
 
-func newRunAllCommand(quiet *bool) *cobra.Command {
+func newRunAllCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 	var continueOnBlocked bool
 	var maxTurns int
 
@@ -116,6 +122,9 @@ func newRunAllCommand(quiet *bool) *cobra.Command {
 			}
 			settings, err := settingsFromContext(cmd.Context())
 			if err != nil {
+				return err
+			}
+			if err := requireCleanWorktreeBeforeAgent(cmd.Context(), project, *allowDirty); err != nil {
 				return err
 			}
 
@@ -141,6 +150,9 @@ func newRunAllCommand(quiet *bool) *cobra.Command {
 				if maxTurns > 0 && runs >= maxTurns {
 					_, printErr := fmt.Fprintf(cmd.OutOrStdout(), "Max turns reached (%d)\n", maxTurns)
 					return printErr
+				}
+				if err := requireCleanWorktreeBeforeAgent(cmd.Context(), project, *allowDirty); err != nil {
+					return err
 				}
 
 				run, ran, complete, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, nil, continueOnBlocked, cmd.OutOrStdout(), cmd.ErrOrStderr())
@@ -170,6 +182,13 @@ func newRunAllCommand(quiet *bool) *cobra.Command {
 	cmd.Flags().BoolVar(&continueOnBlocked, "continue-on-blocked", false, "continue running pending tasks when blocked or failed tasks exist")
 	cmd.Flags().IntVar(&maxTurns, "max-turns", 0, "maximum agent turns to run (0 means unlimited)")
 	return cmd
+}
+
+func requireCleanWorktreeBeforeAgent(ctx context.Context, project sqlc.Project, allowDirty bool) error {
+	if allowDirty {
+		return nil
+	}
+	return gitrepo.RequireCleanWorktree(ctx, project.RootPath)
 }
 
 func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, feedbackCommands []string, quiet bool, seen map[int64]struct{}, forcedTaskID *int64, pendingOnly bool, stdout io.Writer, stderr io.Writer) (runOutput, bool, bool, error) {

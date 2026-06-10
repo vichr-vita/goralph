@@ -26,3 +26,4 @@ runner: tracked agent turns as run records; checks: sqlc generate, gofmt, go tes
 2026-06-10: Implemented run one default agent task selection: eligible-task prompt, no-eligible outcome, one-turn stop, metadata/task update verification, tests passing.
 Implemented run one --task targeting with current-project validation and forced-task prompt.
 2026-06-10 - Implemented goralph run all loop stop conditions, --max-turns, --continue-on-blocked, and tests. go test ./... passed.
+2026-06-10 safety: clean git worktree guard before run one/all; --allow-dirty bypass; tests pass.

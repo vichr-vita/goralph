@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1110,6 +1111,152 @@ func TestRunOneReportsNoEligibleTasks(t *testing.T) {
 	}
 }
 
+func TestRunOneRequiresCleanWorktreeUnlessAllowed(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"dirty guarded","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "dirty.txt"), []byte("dirty\n"), 0o600); err != nil {
+		t.Fatalf("write dirty marker: %v", err)
+	}
+	runnerScript := "#!/bin/sh\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "one"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "dirty git worktree") || !strings.Contains(err.Error(), "dirty.txt") {
+		t.Fatalf("run one dirty error = %v, want dirty worktree with path", err)
+	}
+	assertRunCount(t, dbPath, 0)
+
+	stdout := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "--allow-dirty", "one"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run one --allow-dirty: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Status: succeeded") {
+		t.Fatalf("run output = %q, want succeeded", stdout.String())
+	}
+	assertRunCount(t, dbPath, 1)
+}
+
+func TestRunAllRequiresCleanWorktree(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	runnerPath := filepath.Join(tempDir, "should-not-run.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nexit 99\n"), 0o700); err != nil {
+		t.Fatalf("write runner: %v", err)
+	}
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"dirty guarded","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "dirty.txt"), []byte("dirty\n"), 0o600); err != nil {
+		t.Fatalf("write dirty marker: %v", err)
+	}
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "all"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "dirty git worktree") || !strings.Contains(err.Error(), "dirty.txt") {
+		t.Fatalf("run all dirty error = %v, want dirty worktree with path", err)
+	}
+	assertRunCount(t, dbPath, 0)
+}
+
+func TestRunAllRechecksCleanWorktreeBeforeEachTurn(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	countPath := filepath.Join(tempDir, "count.txt")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"still pending","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	runnerScript := "#!/bin/sh\nprintf x >> " + strconv.Quote(countPath) + "\nprintf dirty > " + strconv.Quote(filepath.Join(repoRoot, "dirty-after-first.txt")) + "\nGO_RALPH_TEST_HELPER=run_all_progress_pending GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunAllHelper$' >/dev/null\n"
+	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "all", "--max-turns", "3"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "dirty git worktree") || !strings.Contains(err.Error(), "dirty-after-first.txt") {
+		t.Fatalf("run all second-turn dirty error = %v, want dirty worktree with path", err)
+	}
+	if got := readTestFile(t, countPath); got != "x" {
+		t.Fatalf("runner count = %q, want one turn", got)
+	}
+	assertRunCount(t, dbPath, 1)
+}
+
 func TestRunAllPassesPendingTasksUntilAllPassed(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -1970,11 +2117,12 @@ func createTestGitWorkDir(t *testing.T, repoName string) (string, string) {
 
 	repoRoot := filepath.Join(t.TempDir(), repoName)
 	workDir := filepath.Join(repoRoot, "nested", "pkg")
-	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
-		t.Fatalf("create git root: %v", err)
-	}
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		t.Fatalf("create work dir: %v", err)
+	}
+	cmd := exec.Command("git", "init", "--quiet", repoRoot)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("init git repo: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return repoRoot, workDir
 }
@@ -1994,6 +2142,24 @@ func chdir(t *testing.T, dir string) {
 			t.Fatalf("restore working directory: %v", err)
 		}
 	})
+}
+
+func assertRunCount(t *testing.T, dbPath string, want int) {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	var got int
+	if err := database.QueryRow("SELECT COUNT(*) FROM run").Scan(&got); err != nil {
+		t.Fatalf("count runs: %v", err)
+	}
+	if got != want {
+		t.Fatalf("run count = %d, want %d", got, want)
+	}
 }
 
 func assertProject(t *testing.T, dbPath string, rootPath string, name string) {

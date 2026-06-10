@@ -384,7 +384,7 @@
       "Allow --allow-dirty to bypass the pre-run dirty check",
       "Return the dirty git exit outcome when blocked"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "safety",
