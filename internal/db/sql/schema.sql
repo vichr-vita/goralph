@@ -1,0 +1,2 @@
+-- Minimal schema placeholder for sqlc SQLite generation.
+-- Application tables are intentionally deferred to later database PRD items.

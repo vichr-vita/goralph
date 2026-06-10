@@ -43,7 +43,7 @@
       "Avoid ORM-based persistence",
       "Verify generated code builds"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "database",
