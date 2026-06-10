@@ -24,7 +24,7 @@ func TestNewDefaultsToPiCommandAndPromptArg(t *testing.T) {
 
 func TestRunExecutesConfiguredCommandAndReturnsMetadata(t *testing.T) {
 	argsPath := filepath.Join(t.TempDir(), "args.txt")
-	script := writeScript(t, "capture.sh", "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > \"$GORALPH_ARGS_FILE\"\n")
+	script := writeScript(t, "capture.sh", "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > \"$GORALPH_ARGS_FILE\"\nprintf 'runner stdout\\n'\nprintf 'runner stderr\\n' >&2\n")
 	r := New(script, []string{"-p", "--model", "test-model"})
 
 	result, err := r.Run(context.Background(), runner.Request{
@@ -66,10 +66,43 @@ func TestRunExecutesConfiguredCommandAndReturnsMetadata(t *testing.T) {
 	if metadata.ExitError != "" {
 		t.Fatalf("exit error = %q, want empty", metadata.ExitError)
 	}
+	if result.Stdout != "runner stdout\n" {
+		t.Fatalf("stdout = %q, want runner stdout", result.Stdout)
+	}
+	if result.Stderr != "runner stderr\n" {
+		t.Fatalf("stderr = %q, want runner stderr", result.Stderr)
+	}
+}
+
+func TestRunInteractiveLaunchesTUIWithoutPrintFlag(t *testing.T) {
+	argsPath := filepath.Join(t.TempDir(), "interactive-args.txt")
+	script := writeScript(t, "interactive.sh", "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > \"$GORALPH_ARGS_FILE\"\nprintf 'interactive stdout\\n'\nprintf 'interactive stderr\\n' >&2\n")
+	r := New(script, []string{"--provider", "test-provider", "--print", "--model", "test-model", "-p"})
+
+	result, err := r.Run(context.Background(), runner.Request{
+		Prompt:      "initial prompt",
+		Env:         []string{"GORALPH_ARGS_FILE=" + argsPath},
+		Interactive: true,
+	})
+	if err != nil {
+		t.Fatalf("run pi interactive: %v", err)
+	}
+
+	gotArgs := strings.Split(strings.TrimSpace(readFile(t, argsPath)), "\n")
+	wantArgs := []string{"--provider", "test-provider", "--model", "test-model", "initial prompt"}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", gotArgs, wantArgs)
+	}
+	if result.Stdout != "interactive stdout\n" {
+		t.Fatalf("stdout = %q, want interactive stdout", result.Stdout)
+	}
+	if result.Stderr != "interactive stderr\n" {
+		t.Fatalf("stderr = %q, want interactive stderr", result.Stderr)
+	}
 }
 
 func TestRunRecordsNonZeroExitMetadata(t *testing.T) {
-	script := writeScript(t, "fail.sh", "#!/bin/sh\nexit 7\n")
+	script := writeScript(t, "fail.sh", "#!/bin/sh\nprintf 'failed stdout\\n'\nprintf 'failed stderr\\n' >&2\nexit 7\n")
 	r := New(script, []string{"-p"})
 
 	result, err := r.Run(context.Background(), runner.Request{Prompt: "fail prompt"})
@@ -81,6 +114,12 @@ func TestRunRecordsNonZeroExitMetadata(t *testing.T) {
 	}
 	if result.Metadata.ExitError == "" {
 		t.Fatalf("exit error empty, want wait error")
+	}
+	if result.Stdout != "failed stdout\n" {
+		t.Fatalf("stdout = %q, want failed stdout", result.Stdout)
+	}
+	if result.Stderr != "failed stderr\n" {
+		t.Fatalf("stderr = %q, want failed stderr", result.Stderr)
 	}
 }
 

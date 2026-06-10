@@ -1,9 +1,11 @@
 package pi
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"slices"
@@ -56,17 +58,28 @@ func (r *Runner) Args() []string {
 // Run executes Pi with configured args and appends the prompt as the final argument.
 func (r *Runner) Run(ctx context.Context, req runner.Request) (runner.Result, error) {
 	startedAt := time.Now()
-	args := append(r.Args(), req.Prompt)
+	runnerArgs := r.Args()
+	args := commandArgs(runnerArgs, req)
 	cmd := exec.CommandContext(ctx, r.command, args...)
 	cmd.Dir = req.WorkDir
 	if len(req.Env) > 0 {
 		cmd.Env = append(os.Environ(), req.Env...)
 	}
 
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if req.Interactive {
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = io.MultiWriter(os.Stdout, &stdout)
+		cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	}
+
 	metadata := runner.Metadata{
 		RunnerName: Name,
 		Command:    r.command,
-		Args:       r.Args(),
+		Args:       runnerArgs,
 		Host:       hostName(),
 		StartedAt:  startedAt,
 		ExitCode:   -1,
@@ -75,19 +88,39 @@ func (r *Runner) Run(ctx context.Context, req runner.Request) (runner.Result, er
 	if err := cmd.Start(); err != nil {
 		metadata.FinishedAt = time.Now()
 		metadata.ExitError = err.Error()
-		return runner.Result{Metadata: metadata}, fmt.Errorf("start pi runner: %w", err)
+		return runner.Result{Metadata: metadata, Stdout: stdout.String(), Stderr: stderr.String()}, fmt.Errorf("start pi runner: %w", err)
 	}
 	metadata.PID = cmd.Process.Pid
 
 	err := cmd.Wait()
 	metadata.FinishedAt = time.Now()
 	metadata.ExitCode, metadata.ExitSignal = exitOutcome(cmd.ProcessState)
+	result := runner.Result{Metadata: metadata, Stdout: stdout.String(), Stderr: stderr.String()}
 	if err != nil {
 		metadata.ExitError = err.Error()
-		return runner.Result{Metadata: metadata}, fmt.Errorf("wait for pi runner: %w", err)
+		result.Metadata = metadata
+		return result, fmt.Errorf("wait for pi runner: %w", err)
 	}
 
-	return runner.Result{Metadata: metadata}, nil
+	return result, nil
+}
+
+func commandArgs(args []string, req runner.Request) []string {
+	if req.Interactive {
+		args = withoutPrintArgs(args)
+	}
+	return append(slices.Clone(args), req.Prompt)
+}
+
+func withoutPrintArgs(args []string) []string {
+	filtered := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "-p" || arg == "--print" {
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+	return filtered
 }
 
 func hostName() string {

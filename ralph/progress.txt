@@ -18,3 +18,4 @@
 2026-06-10: Implemented progress add/list with optional task filter, JSON output, project scoping, active run association; tests and CLI smoke pass.
 2026-06-10: Implemented eligible task selection: pending/failed selectable; passed/blocked/in_progress excluded; no-task outcome tested.
 2026-06-10: Implemented runner interface, configurable Pi-backed runner defaults, and runner config command/args. Checks: gofmt, LSP diagnostics, go test ./internal/config ./internal/cli, go test ./... passed.
+2026-06-10T15:13:25Z - Implemented Pi runner headless default (-p), interactive TUI mode without print flag, stdout/stderr capture, and exit metadata tests. Checks: LSP diagnostics, go test ./internal/runner/..., go test ./... passed.

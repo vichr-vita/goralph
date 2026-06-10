@@ -253,7 +253,7 @@
       "Add --interactive to launch the Pi TUI instead of headless mode",
       "Ensure headless mode is scriptable for automation"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "runner",

@@ -7,9 +7,10 @@ import (
 
 // Request describes one prompt execution request.
 type Request struct {
-	Prompt  string
-	WorkDir string
-	Env     []string
+	Prompt      string
+	WorkDir     string
+	Env         []string
+	Interactive bool
 }
 
 // Metadata describes one runner execution.
@@ -30,9 +31,11 @@ type Metadata struct {
 	ExitError     string
 }
 
-// Result contains runner output metadata.
+// Result contains captured runner output and metadata.
 type Result struct {
 	Metadata Metadata
+	Stdout   string
+	Stderr   string
 }
 
 // Runner executes prompts and returns run metadata.
