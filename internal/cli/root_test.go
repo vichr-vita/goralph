@@ -905,6 +905,7 @@ func TestRunOnePromptIncludesProjectFeedbackCommands(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "db", "ralph.db")
 	promptPath := filepath.Join(tempDir, "prompt.txt")
+	feedbackMarkerPath := filepath.Join(tempDir, "feedback-marker.txt")
 	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
 	configPath := filepath.Join(tempDir, "config.yaml")
 	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
@@ -925,7 +926,8 @@ func TestRunOnePromptIncludesProjectFeedbackCommands(t *testing.T) {
 	}
 
 	cmd = NewRootCommand()
-	cmd.SetArgs([]string{"--db", dbPath, "feedback", "set", "unit", "go test ./..."})
+	feedbackCommand := "printf feedback-ran > " + strconv.Quote(feedbackMarkerPath)
+	cmd.SetArgs([]string{"--db", dbPath, "feedback", "set", "unit", feedbackCommand})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	if err := cmd.Execute(); err != nil {
@@ -947,10 +949,13 @@ func TestRunOnePromptIncludesProjectFeedbackCommands(t *testing.T) {
 	}
 
 	prompt := readTestFile(t, promptPath)
-	for _, want := range []string{"unit: go test ./...", "goralph feedback run <name>", "decide which configured feedback commands fit this change"} {
+	for _, want := range []string{"unit: " + feedbackCommand, "goralph feedback run <name>", "decide which configured feedback commands fit this change", "Run relevant feedback loops before passing task", "Ralph v1 will not run or enforce feedback commands after you exit", "Report feedback command success or failure with progress entries and final task status"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+	if _, err := os.Stat(feedbackMarkerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("feedback marker stat error = %v, want no automatic feedback run", err)
 	}
 }
 

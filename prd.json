@@ -456,7 +456,7 @@
       "Do not automatically run feedback commands after the agent exits in v1",
       "Leave command success reporting to progress entries and task status updates"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "cli",
