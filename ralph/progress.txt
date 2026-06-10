@@ -9,3 +9,4 @@
 2026-06-10: Resolved current project from nearest git root and auto-created project records by root path with default repo-name project names. Checks: sqlc generate, gofmt, go test ./... passed.
 2026-06-10: Implemented project info/init commands with human and JSON output, updating auto-created project rows. Checks: sqlc generate, gofmt, go test ./... passed.
 2026-06-10: Implemented layered config loading for XDG user config and .ralph project config, project overrides, runner/feedback settings, and DB path precedence via flag/env/config. Checks: gofmt, go test ./... passed.
+2026-06-10: Implemented strict PRD JSON array validation command; go test ./... passed.

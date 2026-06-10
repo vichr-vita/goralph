@@ -37,7 +37,7 @@ func NewRootCommand() *cobra.Command {
 			ctx := context.WithValue(cmd.Context(), settingsContextKey{}, settings)
 			ctx = context.WithValue(ctx, jsonOutputContextKey{}, jsonOutput)
 			cmd.SetContext(ctx)
-			if isDBCommand(cmd) {
+			if isProjectlessCommand(cmd) {
 				return nil
 			}
 
@@ -58,6 +58,7 @@ func NewRootCommand() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "emit JSON output")
 	cmd.AddCommand(newDBCommand())
 	cmd.AddCommand(newProjectCommand())
+	cmd.AddCommand(newPRDCommand())
 
 	return cmd
 }

@@ -93,7 +93,10 @@ func resetDatabase(ctx context.Context, path string) error {
 	return migrateDatabase(ctx, path)
 }
 
-func isDBCommand(cmd *cobra.Command) bool {
+func isProjectlessCommand(cmd *cobra.Command) bool {
+	if isPRDValidateCommand(cmd) {
+		return true
+	}
 	for current := cmd; current != nil; current = current.Parent() {
 		if current.Name() == "db" {
 			return true

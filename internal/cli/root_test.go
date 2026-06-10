@@ -230,6 +230,36 @@ func TestRootCommandErrorsWithoutGitRoot(t *testing.T) {
 	}
 }
 
+func TestPRDValidateCommandValidatesFileWithoutGitRoot(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	workDir := filepath.Join(t.TempDir(), "not-a-repo")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("create work dir: %v", err)
+	}
+	chdir(t, workDir)
+
+	prdPath := filepath.Join(t.TempDir(), "prd.json")
+	if err := os.WriteFile(prdPath, []byte(`[{"category":"cli","description":"validate PRD","steps":["step"],"passes":false}]`), 0o600); err != nil {
+		t.Fatalf("write PRD: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", filepath.Join(t.TempDir(), "ralph.db"), "prd", "validate", prdPath})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd validate: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "validated "+prdPath) {
+		t.Fatalf("prd validate output = %q, want validated path", stdout.String())
+	}
+}
+
 func TestDBPathPrintsResolvedDatabasePath(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)

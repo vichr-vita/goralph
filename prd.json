@@ -140,7 +140,7 @@
       "Reject unknown fields",
       "Reject duplicate descriptions within the imported file"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "cli",
