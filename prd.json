@@ -396,7 +396,7 @@
       "Report that the agent did not leave a clean committed state",
       "Do not create commits from the CLI"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "safety",

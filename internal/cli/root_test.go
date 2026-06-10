@@ -1236,6 +1236,63 @@ func TestRunOneRequiresCleanWorktreeUnlessAllowed(t *testing.T) {
 	assertRunCount(t, dbPath, 1)
 }
 
+func TestRunOneFailsWhenAgentLeavesDirtyWorktree(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"must commit","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	runnerScript := "#!/bin/sh\nprintf dirty > " + strconv.Quote(filepath.Join(repoRoot, "dirty-after-run.txt")) + "\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "one"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "agent did not leave a clean committed state") || !strings.Contains(err.Error(), "dirty-after-run.txt") {
+		t.Fatalf("run one dirty-after error = %v, want committed state failure with dirty file", err)
+	}
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+	var status string
+	var exitError sql.NullString
+	if err := database.QueryRow("SELECT status, exit_error FROM run").Scan(&status, &exitError); err != nil {
+		t.Fatalf("query run: %v", err)
+	}
+	if status != "failed" || !exitError.Valid || !strings.Contains(exitError.String, "agent did not leave a clean committed state") {
+		t.Fatalf("run status=%q exit_error=%v, want failed committed-state error", status, exitError)
+	}
+}
+
 func TestRunAllRequiresCleanWorktree(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)

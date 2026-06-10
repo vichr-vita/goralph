@@ -91,7 +91,7 @@ func newRunOneCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 				forcedTaskID = &taskID
 			}
 
-			run, ran, _, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, forcedTaskID, false, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			run, ran, _, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, forcedTaskID, false, !*allowDirty, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			if !ran {
 				_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
 				return printErr
@@ -161,7 +161,7 @@ func newRunAllCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 					return err
 				}
 
-				run, ran, complete, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, nil, continueOnBlocked, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				run, ran, complete, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, nil, continueOnBlocked, !*allowDirty, cmd.OutOrStdout(), cmd.ErrOrStderr())
 				if !ran {
 					if runs == 0 {
 						_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
@@ -200,7 +200,7 @@ func requireCleanWorktreeBeforeAgent(ctx context.Context, project sqlc.Project, 
 	return gitrepo.RequireCleanWorktree(ctx, project.RootPath)
 }
 
-func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, feedbackCommands []string, quiet bool, seen map[int64]struct{}, forcedTaskID *int64, pendingOnly bool, stdout io.Writer, stderr io.Writer) (runOutput, bool, bool, error) {
+func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, feedbackCommands []string, quiet bool, seen map[int64]struct{}, forcedTaskID *int64, pendingOnly bool, verifyCleanAfter bool, stdout io.Writer, stderr io.Writer) (runOutput, bool, bool, error) {
 	database, err := db.Open(dbPath)
 	if err != nil {
 		return runOutput{}, false, false, fmt.Errorf("open database: %w", err)
@@ -303,6 +303,11 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 			}
 		} else if seen != nil {
 			seen[selectedTaskID] = struct{}{}
+		}
+	}
+	if runErr == nil && verifyCleanAfter {
+		if err := gitrepo.RequireCleanWorktree(ctx, project.RootPath); err != nil {
+			runErr = fmt.Errorf("agent did not leave a clean committed state: %w", err)
 		}
 	}
 	if runErr != nil && metadata.ExitError == "" {
