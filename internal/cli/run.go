@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/vichr-vita/goralph/internal/db"
@@ -311,14 +310,6 @@ func staleActiveRun(run sqlc.Run, policy activeRunPolicy) (bool, string) {
 		}
 	}
 	return false, ""
-}
-
-func pidAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func parseRunTime(value string) (time.Time, bool) {
