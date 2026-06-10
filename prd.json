@@ -19,7 +19,7 @@
       "Keep command wiring in internal/cli",
       "Verify go test ./... passes with the package layout"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "database",
