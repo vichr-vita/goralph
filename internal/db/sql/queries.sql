@@ -67,10 +67,20 @@ INSERT INTO task (project_id, category, description, status)
 VALUES (?, ?, ?, ?)
 RETURNING id, project_id, category, description, status, progress_report, created_at, updated_at;
 
+-- name: UpdateTask :one
+UPDATE task
+SET category = ?, description = ?, status = ?, progress_report = ?, updated_at = CURRENT_TIMESTAMP
+WHERE project_id = ? AND id = ?
+RETURNING id, project_id, category, description, status, progress_report, created_at, updated_at;
+
 -- name: CreateTaskStep :one
 INSERT INTO task_step (task_id, position, description)
 VALUES (?, ?, ?)
 RETURNING id, task_id, position, description, created_at, updated_at;
+
+-- name: DeleteTaskStepsByTask :exec
+DELETE FROM task_step
+WHERE task_id = ?;
 
 -- name: DeleteTaskStepsByProject :exec
 DELETE FROM task_step

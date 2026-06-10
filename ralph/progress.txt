@@ -13,3 +13,4 @@
 2026-06-10T14:30:09Z - Implemented PRD import replace-by-default, --replace, --append; verified gofmt/sqlc/go test/CLI checks.
 2026-06-10T14:37:07Z - Implemented PRD export command with stdout/file pretty JSON, ordered steps, passed-status pass mapping; verified sqlc/gofmt/go test/CLI checks.
 2026-06-10: implemented task list/show CLI with status filter, JSON, steps, timestamps, progress report, latest progress entries.
+2026-06-10 16:47 +0200 - Implemented task add/update CLI with ordered steps/status validation; verified sqlc generate, gofmt, go test ./..., focused go run CLI add/update/invalid-status checks.

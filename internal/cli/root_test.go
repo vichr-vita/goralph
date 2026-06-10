@@ -480,6 +480,120 @@ func TestTaskListSupportsStatusFilterAndJSON(t *testing.T) {
 	}
 }
 
+func TestTaskAddCreatesPendingTaskWithOrderedSteps(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	stdout := &bytes.Buffer{}
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "task", "add", "--category", "cli", "--description", "new task", "--step", "first", "--step", "second"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute task add: %v", err)
+	}
+
+	var got taskOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode task add JSON %q: %v", stdout.String(), err)
+	}
+	if got.Category != "cli" || got.Description != "new task" || got.Status != "pending" {
+		t.Fatalf("task add JSON = %+v, want pending cli task", got)
+	}
+	if len(got.Steps) != 2 || got.Steps[0].Position != 1 || got.Steps[0].Description != "first" || got.Steps[1].Position != 2 || got.Steps[1].Description != "second" {
+		t.Fatalf("task add steps = %+v, want ordered steps", got.Steps)
+	}
+
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 || tasks[0].category != "cli" || tasks[0].description != "new task" || tasks[0].status != "pending" || tasks[0].steps != "first,second" {
+		t.Fatalf("stored tasks = %+v, want added task", tasks)
+	}
+}
+
+func TestTaskUpdateEditsFieldsAndReplacesOrderedSteps(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	prdPath := writePRDFile(t, `[{"category":"cli","description":"old","steps":["one","two"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	taskID := fetchImportedTasks(t, dbPath, repoRoot)[0].id
+
+	stdout := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "--json", "task", "update", strconv.FormatInt(taskID, 10), "--category", "db", "--description", "new", "--status", "blocked", "--progress_report", "blocked by review", "--step", "replacement", "--step", "next"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute task update: %v", err)
+	}
+
+	var got taskOutput
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode task update JSON %q: %v", stdout.String(), err)
+	}
+	if got.Category != "db" || got.Description != "new" || got.Status != "blocked" || got.ProgressReport != "blocked by review" {
+		t.Fatalf("task update JSON = %+v, want updated fields", got)
+	}
+	if len(got.Steps) != 2 || got.Steps[0].Description != "replacement" || got.Steps[1].Description != "next" {
+		t.Fatalf("task update steps = %+v, want replacement order", got.Steps)
+	}
+
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 || tasks[0].category != "db" || tasks[0].description != "new" || tasks[0].status != "blocked" || tasks[0].progressReport != "blocked by review" || tasks[0].steps != "replacement,next" {
+		t.Fatalf("stored tasks = %+v, want updated task", tasks)
+	}
+}
+
+func TestTaskUpdateRejectsInvalidStatusBeforeWriting(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	prdPath := writePRDFile(t, `[{"category":"cli","description":"unchanged","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	taskID := fetchImportedTasks(t, dbPath, repoRoot)[0].id
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "task", "update", strconv.FormatInt(taskID, 10), "--description", "changed", "--status", "completed"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "unknown task status") {
+		t.Fatalf("task update error = %v, want unknown status", err)
+	}
+
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 || tasks[0].description != "unchanged" || tasks[0].status != "pending" {
+		t.Fatalf("stored tasks after invalid update = %+v, want unchanged", tasks)
+	}
+}
+
 func TestTaskShowPrintsDetailsAndLatestProgress(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -626,10 +740,12 @@ func TestDBResetForceRecreatesMigratedDatabase(t *testing.T) {
 }
 
 type importedTaskRow struct {
-	id          int64
-	description string
-	status      string
-	steps       string
+	id             int64
+	category       string
+	description    string
+	status         string
+	progressReport string
+	steps          string
 }
 
 func seedTaskProgress(t *testing.T, dbPath string, taskID int64, progressReport string, summaries []string) {
@@ -725,7 +841,7 @@ func fetchImportedTasks(t *testing.T, dbPath string, rootPath string) []imported
 	defer database.Close()
 
 	rows, err := database.Query(`
-		SELECT t.id, t.description, t.status, COALESCE((
+		SELECT t.id, t.category, t.description, t.status, t.progress_report, COALESCE((
 			SELECT group_concat(description, ',')
 			FROM (
 				SELECT description
@@ -746,7 +862,7 @@ func fetchImportedTasks(t *testing.T, dbPath string, rootPath string) []imported
 	var tasks []importedTaskRow
 	for rows.Next() {
 		var task importedTaskRow
-		if err := rows.Scan(&task.id, &task.description, &task.status, &task.steps); err != nil {
+		if err := rows.Scan(&task.id, &task.category, &task.description, &task.status, &task.progressReport, &task.steps); err != nil {
 			t.Fatalf("scan task: %v", err)
 		}
 		tasks = append(tasks, task)

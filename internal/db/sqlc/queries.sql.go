@@ -116,6 +116,16 @@ func (q *Queries) DeleteTaskStepsByProject(ctx context.Context, projectID int64)
 	return err
 }
 
+const deleteTaskStepsByTask = `-- name: DeleteTaskStepsByTask :exec
+DELETE FROM task_step
+WHERE task_id = ?
+`
+
+func (q *Queries) DeleteTaskStepsByTask(ctx context.Context, taskID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteTaskStepsByTask, taskID)
+	return err
+}
+
 const deleteTasksByProject = `-- name: DeleteTasksByProject :exec
 DELETE FROM task WHERE project_id = ?
 `
@@ -418,6 +428,45 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 		&i.Name,
 		&i.RootPath,
 		&i.Description,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateTask = `-- name: UpdateTask :one
+UPDATE task
+SET category = ?, description = ?, status = ?, progress_report = ?, updated_at = CURRENT_TIMESTAMP
+WHERE project_id = ? AND id = ?
+RETURNING id, project_id, category, description, status, progress_report, created_at, updated_at
+`
+
+type UpdateTaskParams struct {
+	Category       string
+	Description    string
+	Status         string
+	ProgressReport string
+	ProjectID      int64
+	ID             int64
+}
+
+func (q *Queries) UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, error) {
+	row := q.db.QueryRowContext(ctx, updateTask,
+		arg.Category,
+		arg.Description,
+		arg.Status,
+		arg.ProgressReport,
+		arg.ProjectID,
+		arg.ID,
+	)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Category,
+		&i.Description,
+		&i.Status,
+		&i.ProgressReport,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

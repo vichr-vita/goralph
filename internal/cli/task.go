@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"goralph/internal/db"
 	"goralph/internal/db/sqlc"
@@ -51,6 +52,8 @@ func newTaskCommand() *cobra.Command {
 
 	cmd.AddCommand(newTaskListCommand())
 	cmd.AddCommand(newTaskShowCommand())
+	cmd.AddCommand(newTaskAddCommand())
+	cmd.AddCommand(newTaskUpdateCommand())
 
 	return cmd
 }
@@ -94,9 +97,9 @@ func newTaskShowCommand() *cobra.Command {
 		Short: "Show one task",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil || id <= 0 {
-				return fmt.Errorf("invalid task id %q", args[0])
+			id, err := parseTaskID(args[0])
+			if err != nil {
+				return err
 			}
 
 			project, err := projectFromContext(cmd.Context())
@@ -115,6 +118,120 @@ func newTaskShowCommand() *cobra.Command {
 			return writeTask(cmd, task)
 		},
 	}
+}
+
+func newTaskAddCommand() *cobra.Command {
+	var category string
+	var description string
+	var steps []string
+
+	cmd := &cobra.Command{
+		Use:   "add",
+		Short: "Add a task",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(category) == "" {
+				return errors.New("task category cannot be empty")
+			}
+			if strings.TrimSpace(description) == "" {
+				return errors.New("task description cannot be empty")
+			}
+			if err := validateTaskSteps(steps); err != nil {
+				return err
+			}
+
+			project, err := projectFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+			settings, err := settingsFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			task, err := addTask(cmd.Context(), settings.DBPath, project.ID, category, description, steps)
+			if err != nil {
+				return err
+			}
+			return writeTask(cmd, task)
+		},
+	}
+	cmd.Flags().StringVar(&category, "category", "", "task category")
+	cmd.Flags().StringVar(&description, "description", "", "task description")
+	cmd.Flags().StringArrayVar(&steps, "step", nil, "task step; repeat to preserve order")
+	_ = cmd.MarkFlagRequired("category")
+	_ = cmd.MarkFlagRequired("description")
+
+	return cmd
+}
+
+func newTaskUpdateCommand() *cobra.Command {
+	var category string
+	var description string
+	var status string
+	var progressReport string
+	var steps []string
+
+	cmd := &cobra.Command{
+		Use:   "update <id>",
+		Short: "Update a task",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := parseTaskID(args[0])
+			if err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("category") && strings.TrimSpace(category) == "" {
+				return errors.New("task category cannot be empty")
+			}
+			if cmd.Flags().Changed("description") && strings.TrimSpace(description) == "" {
+				return errors.New("task description cannot be empty")
+			}
+			if cmd.Flags().Changed("status") {
+				if err := validateTaskStatus(status); err != nil {
+					return err
+				}
+			}
+			if cmd.Flags().Changed("step") {
+				if err := validateTaskSteps(steps); err != nil {
+					return err
+				}
+			}
+
+			project, err := projectFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+			settings, err := settingsFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			updates := taskUpdates{
+				Category:              category,
+				CategoryChanged:       cmd.Flags().Changed("category"),
+				Description:           description,
+				DescriptionChanged:    cmd.Flags().Changed("description"),
+				Status:                status,
+				StatusChanged:         cmd.Flags().Changed("status"),
+				ProgressReport:        progressReport,
+				ProgressReportChanged: cmd.Flags().Changed("progress_report"),
+				Steps:                 steps,
+				StepsChanged:          cmd.Flags().Changed("step"),
+			}
+			task, err := updateTask(cmd.Context(), settings.DBPath, project.ID, id, updates)
+			if err != nil {
+				return err
+			}
+			return writeTask(cmd, task)
+		},
+	}
+	cmd.Flags().StringVar(&category, "category", "", "task category")
+	cmd.Flags().StringVar(&description, "description", "", "task description")
+	cmd.Flags().StringArrayVar(&steps, "step", nil, "replace task steps; repeat to preserve order")
+	cmd.Flags().StringVar(&status, "status", "", "task status")
+	cmd.Flags().StringVar(&progressReport, "progress_report", "", "task progress report")
+
+	return cmd
 }
 
 func listTasks(ctx context.Context, dbPath string, projectID int64, status string) ([]taskOutput, error) {
@@ -168,6 +285,181 @@ func showTask(ctx context.Context, dbPath string, projectID int64, taskID int64)
 		return taskOutput{}, fmt.Errorf("load task %d: %w", taskID, err)
 	}
 	return loadTaskDetails(ctx, queries, row)
+}
+
+func addTask(ctx context.Context, dbPath string, projectID int64, category string, description string, steps []string) (taskOutput, error) {
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return taskOutput{}, fmt.Errorf("open database: %w", err)
+	}
+	defer database.Close()
+
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return taskOutput{}, fmt.Errorf("begin task add transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	queries := sqlc.New(database).WithTx(tx)
+	task, err := queries.CreateTask(ctx, sqlc.CreateTaskParams{
+		ProjectID:   projectID,
+		Category:    category,
+		Description: description,
+		Status:      string(db.TaskStatusPending),
+	})
+	if err != nil {
+		return taskOutput{}, fmt.Errorf("insert task: %w", err)
+	}
+	if err := replaceTaskSteps(ctx, queries, task.ID, steps); err != nil {
+		return taskOutput{}, err
+	}
+	out, err := loadTaskDetails(ctx, queries, task)
+	if err != nil {
+		return taskOutput{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return taskOutput{}, fmt.Errorf("commit task add: %w", err)
+	}
+	committed = true
+	return out, nil
+}
+
+type taskUpdates struct {
+	Category              string
+	CategoryChanged       bool
+	Description           string
+	DescriptionChanged    bool
+	Status                string
+	StatusChanged         bool
+	ProgressReport        string
+	ProgressReportChanged bool
+	Steps                 []string
+	StepsChanged          bool
+}
+
+func (u taskUpdates) changed() bool {
+	return u.CategoryChanged || u.DescriptionChanged || u.StatusChanged || u.ProgressReportChanged || u.StepsChanged
+}
+
+func updateTask(ctx context.Context, dbPath string, projectID int64, taskID int64, updates taskUpdates) (taskOutput, error) {
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return taskOutput{}, fmt.Errorf("open database: %w", err)
+	}
+	defer database.Close()
+
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return taskOutput{}, fmt.Errorf("begin task update transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	queries := sqlc.New(database).WithTx(tx)
+	task, err := queries.GetTaskByProjectAndID(ctx, sqlc.GetTaskByProjectAndIDParams{
+		ProjectID: projectID,
+		ID:        taskID,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return taskOutput{}, fmt.Errorf("task %d not found", taskID)
+		}
+		return taskOutput{}, fmt.Errorf("load task %d: %w", taskID, err)
+	}
+
+	if !updates.changed() {
+		out, err := loadTaskDetails(ctx, queries, task)
+		if err != nil {
+			return taskOutput{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return taskOutput{}, fmt.Errorf("commit task update: %w", err)
+		}
+		committed = true
+		return out, nil
+	}
+
+	if updates.CategoryChanged {
+		task.Category = updates.Category
+	}
+	if updates.DescriptionChanged {
+		task.Description = updates.Description
+	}
+	if updates.StatusChanged {
+		task.Status = updates.Status
+	}
+	if updates.ProgressReportChanged {
+		task.ProgressReport = updates.ProgressReport
+	}
+
+	updated, err := queries.UpdateTask(ctx, sqlc.UpdateTaskParams{
+		Category:       task.Category,
+		Description:    task.Description,
+		Status:         task.Status,
+		ProgressReport: task.ProgressReport,
+		ProjectID:      projectID,
+		ID:             taskID,
+	})
+	if err != nil {
+		return taskOutput{}, fmt.Errorf("update task %d: %w", taskID, err)
+	}
+	if updates.StepsChanged {
+		if err := queries.DeleteTaskStepsByTask(ctx, taskID); err != nil {
+			return taskOutput{}, fmt.Errorf("delete task %d steps: %w", taskID, err)
+		}
+		if err := replaceTaskSteps(ctx, queries, taskID, updates.Steps); err != nil {
+			return taskOutput{}, err
+		}
+	}
+
+	out, err := loadTaskDetails(ctx, queries, updated)
+	if err != nil {
+		return taskOutput{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return taskOutput{}, fmt.Errorf("commit task update: %w", err)
+	}
+	committed = true
+	return out, nil
+}
+
+func replaceTaskSteps(ctx context.Context, queries *sqlc.Queries, taskID int64, steps []string) error {
+	for index, step := range steps {
+		if _, err := queries.CreateTaskStep(ctx, sqlc.CreateTaskStepParams{
+			TaskID:      taskID,
+			Position:    int64(index + 1),
+			Description: step,
+		}); err != nil {
+			return fmt.Errorf("insert task %d step %d: %w", taskID, index, err)
+		}
+	}
+	return nil
+}
+
+func parseTaskID(value string) (int64, error) {
+	id, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("invalid task id %q", value)
+	}
+	return id, nil
+}
+
+func validateTaskSteps(steps []string) error {
+	for index, step := range steps {
+		if strings.TrimSpace(step) == "" {
+			return fmt.Errorf("task step %d cannot be empty", index+1)
+		}
+	}
+	return nil
 }
 
 func loadTaskDetails(ctx context.Context, queries *sqlc.Queries, task sqlc.Task) (taskOutput, error) {

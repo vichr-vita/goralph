@@ -190,7 +190,7 @@
       "Validate status values before writing",
       "Preserve step ordering"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "cli",
