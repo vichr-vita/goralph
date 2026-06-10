@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"goralph/internal/db"
 	"goralph/internal/db/sqlc"
@@ -47,6 +49,8 @@ type runOutput struct {
 func newRunCommand() *cobra.Command {
 	var quiet bool
 	var allowDirty bool
+	var force bool
+	var staleAfter time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -55,8 +59,10 @@ func newRunCommand() *cobra.Command {
 	}
 	cmd.PersistentFlags().BoolVar(&quiet, "quiet", false, "suppress live runner output")
 	cmd.PersistentFlags().BoolVar(&allowDirty, "allow-dirty", false, "run agents without requiring a clean git worktree")
-	cmd.AddCommand(newRunOneCommand(&quiet, &allowDirty))
-	cmd.AddCommand(newRunAllCommand(&quiet, &allowDirty))
+	cmd.PersistentFlags().BoolVar(&force, "force", false, "mark stale active runs failed before starting")
+	cmd.PersistentFlags().DurationVar(&staleAfter, "stale-after", 30*time.Minute, "active run heartbeat age considered stale")
+	cmd.AddCommand(newRunOneCommand(&quiet, &allowDirty, &force, &staleAfter))
+	cmd.AddCommand(newRunAllCommand(&quiet, &allowDirty, &force, &staleAfter))
 	cmd.AddCommand(newRunListCommand())
 	cmd.AddCommand(newRunShowCommand())
 	cmd.AddCommand(newRunOpenCommand())
@@ -65,7 +71,7 @@ func newRunCommand() *cobra.Command {
 	return cmd
 }
 
-func newRunOneCommand(quiet *bool, allowDirty *bool) *cobra.Command {
+func newRunOneCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *time.Duration) *cobra.Command {
 	var taskID int64
 	cmd := &cobra.Command{
 		Use:   "one",
@@ -79,7 +85,8 @@ func newRunOneCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := requireNoActiveRun(cmd.Context(), settings.DBPath, project.ID); err != nil {
+			activePolicy := activeRunPolicy{Force: *force, StaleAfter: *staleAfter}
+			if err := requireNoActiveRun(cmd.Context(), settings.DBPath, project.ID, activePolicy); err != nil {
 				return err
 			}
 			if err := requireCleanWorktreeBeforeAgent(cmd.Context(), project, *allowDirty); err != nil {
@@ -94,7 +101,7 @@ func newRunOneCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 				forcedTaskID = &taskID
 			}
 
-			run, ran, _, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, forcedTaskID, false, !*allowDirty, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			run, ran, _, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, forcedTaskID, false, !*allowDirty, activePolicy, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			if !ran {
 				_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
 				return printErr
@@ -109,7 +116,7 @@ func newRunOneCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 	return cmd
 }
 
-func newRunAllCommand(quiet *bool, allowDirty *bool) *cobra.Command {
+func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *time.Duration) *cobra.Command {
 	var continueOnBlocked bool
 	var maxTurns int
 	var unsupportedTaskID string
@@ -133,7 +140,8 @@ func newRunAllCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := requireNoActiveRun(cmd.Context(), settings.DBPath, project.ID); err != nil {
+			activePolicy := activeRunPolicy{Force: *force, StaleAfter: *staleAfter}
+			if err := requireNoActiveRun(cmd.Context(), settings.DBPath, project.ID, activePolicy); err != nil {
 				return err
 			}
 			if err := requireCleanWorktreeBeforeAgent(cmd.Context(), project, *allowDirty); err != nil {
@@ -167,7 +175,7 @@ func newRunAllCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 					return err
 				}
 
-				run, ran, complete, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, nil, continueOnBlocked, !*allowDirty, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				run, ran, complete, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, nil, continueOnBlocked, !*allowDirty, activePolicy, cmd.OutOrStdout(), cmd.ErrOrStderr())
 				if !ran {
 					if runs == 0 {
 						_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
@@ -199,40 +207,113 @@ func newRunAllCommand(quiet *bool, allowDirty *bool) *cobra.Command {
 	return cmd
 }
 
+type activeRunPolicy struct {
+	Force      bool
+	StaleAfter time.Duration
+}
+
 type activeRunExistsError struct {
-	run runOutput
+	run    runOutput
+	stale  bool
+	reason string
 }
 
 func (e *activeRunExistsError) Error() string {
-	task := "none"
-	if e.run.TaskID != nil {
-		task = strconv.FormatInt(*e.run.TaskID, 10)
+	message := "active run exists for project"
+	if e.stale {
+		message = "stale active run exists for project"
 	}
-	pid := "none"
-	if e.run.PID != nil {
-		pid = strconv.FormatInt(*e.run.PID, 10)
-	}
-	return fmt.Sprintf("active run exists for project: run %d task %s pid %s host %s heartbeat %s; inspect with `goralph run show %d`", e.run.ID, task, pid, emptyValue(e.run.Host), emptyValue(e.run.HeartbeatAt), e.run.ID)
+	return fmt.Sprintf("%s: %s; inspect with `goralph run show %d`", message, activeRunSummary(e.run), e.run.ID)
 }
 
-func requireNoActiveRun(ctx context.Context, dbPath string, projectID int64) error {
+type staleRunRequiresForceError struct {
+	run    runOutput
+	reason string
+}
+
+func (e *staleRunRequiresForceError) Error() string {
+	return fmt.Sprintf("stale active run requires --force before starting: %s; reason: %s; inspect with `goralph run show %d`", activeRunSummary(e.run), e.reason, e.run.ID)
+}
+
+func activeRunSummary(run runOutput) string {
+	task := "none"
+	if run.TaskID != nil {
+		task = strconv.FormatInt(*run.TaskID, 10)
+	}
+	pid := "none"
+	if run.PID != nil {
+		pid = strconv.FormatInt(*run.PID, 10)
+	}
+	return fmt.Sprintf("run %d task %s pid %s host %s heartbeat %s", run.ID, task, pid, emptyValue(run.Host), emptyValue(run.HeartbeatAt))
+}
+
+func requireNoActiveRun(ctx context.Context, dbPath string, projectID int64, policy activeRunPolicy) error {
 	database, err := db.Open(dbPath)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer database.Close()
-	return requireNoActiveRunWithQueries(ctx, sqlc.New(database), projectID)
+	return requireNoActiveRunWithQueries(ctx, sqlc.New(database), projectID, policy)
 }
 
-func requireNoActiveRunWithQueries(ctx context.Context, queries *sqlc.Queries, projectID int64) error {
+func requireNoActiveRunWithQueries(ctx context.Context, queries *sqlc.Queries, projectID int64, policy activeRunPolicy) error {
 	activeRun, err := queries.GetActiveRunByProject(ctx, projectID)
-	if err == nil {
-		return &activeRunExistsError{run: runOutputFromRow(activeRun)}
-	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
-	return fmt.Errorf("load active run: %w", err)
+	if err != nil {
+		return fmt.Errorf("load active run: %w", err)
+	}
+
+	stale, reason := staleActiveRun(activeRun, policy)
+	if !stale {
+		return &activeRunExistsError{run: runOutputFromRow(activeRun)}
+	}
+	if !policy.Force {
+		return &staleRunRequiresForceError{run: runOutputFromRow(activeRun), reason: reason}
+	}
+	if _, err := queries.MarkRunFailed(ctx, sqlc.MarkRunFailedParams{
+		ExitError: sql.NullString{String: "stale active run recovered with --force: " + reason, Valid: true},
+		ProjectID: projectID,
+		ID:        activeRun.ID,
+	}); err != nil {
+		return fmt.Errorf("mark stale active run %d failed: %w", activeRun.ID, err)
+	}
+	return nil
+}
+
+func staleActiveRun(run sqlc.Run, policy activeRunPolicy) (bool, string) {
+	host, _ := os.Hostname()
+	if run.Host != "" && run.Host == host && run.Pid.Valid && run.Pid.Int64 > 0 && !pidAlive(int(run.Pid.Int64)) {
+		return true, fmt.Sprintf("pid %d is not running on host %s", run.Pid.Int64, host)
+	}
+	if policy.StaleAfter > 0 && run.HeartbeatAt.Valid {
+		if heartbeat, ok := parseRunTime(run.HeartbeatAt.String); ok && time.Since(heartbeat) > policy.StaleAfter {
+			if run.Host != "" && run.Host != host {
+				return true, fmt.Sprintf("cross-host heartbeat from %s older than %s", run.Host, policy.StaleAfter)
+			}
+			return true, fmt.Sprintf("heartbeat older than %s", policy.StaleAfter)
+		}
+	}
+	return false, ""
+}
+
+func pidAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func parseRunTime(value string) (time.Time, bool) {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05", "2006-01-02T15:04:05Z07:00"} {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func requireCleanWorktreeBeforeAgent(ctx context.Context, project sqlc.Project, allowDirty bool) error {
@@ -242,7 +323,34 @@ func requireCleanWorktreeBeforeAgent(ctx context.Context, project sqlc.Project, 
 	return gitrepo.RequireCleanWorktree(ctx, project.RootPath)
 }
 
-func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, feedbackCommands []string, quiet bool, seen map[int64]struct{}, forcedTaskID *int64, pendingOnly bool, verifyCleanAfter bool, stdout io.Writer, stderr io.Writer) (runOutput, bool, bool, error) {
+func startRunHeartbeat(ctx context.Context, queries *sqlc.Queries, projectID int64, runID int64, interval time.Duration) func() {
+	if interval <= 0 {
+		interval = time.Second
+	}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-ticker.C:
+				_ = queries.UpdateRunHeartbeat(ctx, sqlc.UpdateRunHeartbeatParams{ProjectID: projectID, ID: runID})
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
+}
+
+func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, feedbackCommands []string, quiet bool, seen map[int64]struct{}, forcedTaskID *int64, pendingOnly bool, verifyCleanAfter bool, activePolicy activeRunPolicy, stdout io.Writer, stderr io.Writer) (runOutput, bool, bool, error) {
 	database, err := db.Open(dbPath)
 	if err != nil {
 		return runOutput{}, false, false, fmt.Errorf("open database: %w", err)
@@ -250,7 +358,7 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 	defer database.Close()
 
 	queries := sqlc.New(database)
-	if err := requireNoActiveRunWithQueries(ctx, queries, project.ID); err != nil {
+	if err := requireNoActiveRunWithQueries(ctx, queries, project.ID, activePolicy); err != nil {
 		return runOutput{}, false, false, err
 	}
 	promptContract := loop.PromptContract{
@@ -313,14 +421,34 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 		return runOutput{}, true, false, fmt.Errorf("create run: %w", err)
 	}
 
+	stopHeartbeat := startRunHeartbeat(ctx, queries, project.ID, started.ID, time.Second)
+	var startErr error
 	result, runErr := pi.New(runnerCommand, runnerArgs).Run(ctx, runner.Request{
 		Prompt:  prompt,
 		WorkDir: project.RootPath,
 		Quiet:   quiet,
 		Stdout:  stdout,
 		Stderr:  stderr,
+		OnStart: func(metadata runner.Metadata) {
+			host := metadata.Host
+			if host == "" {
+				host = started.Host
+			}
+			if _, err := queries.UpdateRunProcess(ctx, sqlc.UpdateRunProcessParams{
+				Pid:       sql.NullInt64{Int64: int64(metadata.PID), Valid: metadata.PID > 0},
+				Host:      host,
+				ProjectID: project.ID,
+				ID:        started.ID,
+			}); err != nil {
+				startErr = fmt.Errorf("update run %d process metadata: %w", started.ID, err)
+			}
+		},
 	})
+	stopHeartbeat()
 	metadata := result.Metadata
+	if runErr == nil && startErr != nil {
+		runErr = startErr
+	}
 	if metadata.RunnerName == "" {
 		metadata.RunnerName = started.RunnerName
 	}

@@ -420,7 +420,7 @@
       "Require --force to mark stale runs failed before starting a new run",
       "Require --force for cross-host stale run recovery"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "safety",

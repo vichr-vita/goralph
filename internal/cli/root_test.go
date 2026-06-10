@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -1172,7 +1173,7 @@ func TestRunOneRejectsExistingActiveRun(t *testing.T) {
 	cmd.SetErr(&bytes.Buffer{})
 	err := cmd.Execute()
 	wantRun := "run " + strconv.FormatInt(activeRunID, 10)
-	for _, want := range []string{"active run exists", wantRun, "pid 4242", "host test-host", "heartbeat 2026-06-10T00:00:00Z", "goralph run show"} {
+	for _, want := range []string{"active run exists", wantRun, "pid 4242", "host test-host", "heartbeat", "goralph run show"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("run one active error = %v, want %q", err, want)
 		}
@@ -1221,6 +1222,122 @@ func TestRunAllRejectsExistingActiveRun(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "active run exists") || !strings.Contains(err.Error(), "goralph run show") {
 		t.Fatalf("run all active error = %v, want active run error", err)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runner marker err = %v, want runner not executed", err)
+	}
+	assertRunCount(t, dbPath, 1)
+}
+
+func TestRunOneRecoversStaleSameHostDeadPIDWithForce(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"recover me","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	host, _ := os.Hostname()
+	staleRunID := seedActiveRunWithMetadata(t, dbPath, repoRoot, tasks[0].id, 999999, host, time.Now().UTC().Format(time.RFC3339))
+	runnerScript := "#!/bin/sh\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "one"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "stale active run requires --force") || !strings.Contains(err.Error(), "pid 999999") {
+		t.Fatalf("run one stale dead pid error = %v, want force-required dead-pid error", err)
+	}
+	assertRunCount(t, dbPath, 1)
+
+	stdout := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--force", "one"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run one --force stale recovery: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Status: succeeded") {
+		t.Fatalf("run output = %q, want succeeded", stdout.String())
+	}
+	assertRunCount(t, dbPath, 2)
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+	var staleStatus string
+	var staleExitError sql.NullString
+	if err := database.QueryRow("SELECT status, exit_error FROM run WHERE id = ?", staleRunID).Scan(&staleStatus, &staleExitError); err != nil {
+		t.Fatalf("query stale run: %v", err)
+	}
+	if staleStatus != "failed" || !staleExitError.Valid || !strings.Contains(staleExitError.String, "stale active run recovered with --force") {
+		t.Fatalf("stale run status=%q exit_error=%v, want failed recovery note", staleStatus, staleExitError)
+	}
+}
+
+func TestRunOneRequiresForceForCrossHostStaleHeartbeat(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	markerPath := filepath.Join(tempDir, "runner-ran.txt")
+	runnerPath := filepath.Join(tempDir, "should-not-run.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nprintf ran > "+strconv.Quote(markerPath)+"\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write runner: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"cross host","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	oldHeartbeat := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	seedActiveRunWithMetadata(t, dbPath, repoRoot, tasks[0].id, 0, "other-host", oldHeartbeat)
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--stale-after", "1h", "one"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "stale active run requires --force") || !strings.Contains(err.Error(), "cross-host") {
+		t.Fatalf("run one cross-host stale error = %v, want force-required cross-host error", err)
 	}
 	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("runner marker err = %v, want runner not executed", err)
@@ -2189,6 +2306,11 @@ func seedRunProgress(t *testing.T, dbPath string, rootPath string, taskID int64,
 
 func seedActiveRun(t *testing.T, dbPath string, rootPath string, taskID int64) int64 {
 	t.Helper()
+	return seedActiveRunWithMetadata(t, dbPath, rootPath, taskID, 4242, "test-host", time.Now().UTC().Format(time.RFC3339))
+}
+
+func seedActiveRunWithMetadata(t *testing.T, dbPath string, rootPath string, taskID int64, pid int64, host string, heartbeat string) int64 {
+	t.Helper()
 
 	database, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -2200,7 +2322,8 @@ func seedActiveRun(t *testing.T, dbPath string, rootPath string, taskID int64) i
 	if err := database.QueryRow("SELECT id FROM project WHERE root_path = ?", rootPath).Scan(&projectID); err != nil {
 		t.Fatalf("query project id: %v", err)
 	}
-	result, err := database.Exec("INSERT INTO run (project_id, task_id, runner_name, status, pid, host, heartbeat_at, started_at) VALUES (?, ?, 'test-runner', 'running', 4242, 'test-host', '2026-06-10T00:00:00Z', CURRENT_TIMESTAMP)", projectID, taskID)
+	pidRef := sql.NullInt64{Int64: pid, Valid: pid > 0}
+	result, err := database.Exec("INSERT INTO run (project_id, task_id, runner_name, status, pid, host, heartbeat_at, started_at) VALUES (?, ?, 'test-runner', 'running', ?, ?, ?, CURRENT_TIMESTAMP)", projectID, taskID, pidRef, host, heartbeat)
 	if err != nil {
 		t.Fatalf("insert active run: %v", err)
 	}

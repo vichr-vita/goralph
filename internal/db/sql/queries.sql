@@ -95,6 +95,31 @@ INSERT INTO run (project_id, task_id, runner_name, status, host, started_at, hea
 VALUES (?, ?, ?, 'running', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 RETURNING id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at;
 
+-- name: UpdateRunProcess :one
+UPDATE run
+SET pid = ?,
+    host = ?,
+    heartbeat_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE project_id = ? AND id = ? AND status = 'running'
+RETURNING id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at;
+
+-- name: UpdateRunHeartbeat :exec
+UPDATE run
+SET heartbeat_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE project_id = ? AND id = ? AND status = 'running';
+
+-- name: MarkRunFailed :one
+UPDATE run
+SET status = 'failed',
+    exit_error = ?,
+    heartbeat_at = CURRENT_TIMESTAMP,
+    finished_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE project_id = ? AND id = ? AND status = 'running'
+RETURNING id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at;
+
 -- name: FinishRun :one
 UPDATE run
 SET runner_name = ?,

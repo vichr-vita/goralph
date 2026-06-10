@@ -103,6 +103,9 @@ func (r *Runner) Run(ctx context.Context, req runner.Request) (runner.Result, er
 		return runner.Result{Metadata: metadata, Stdout: stdout.String(), Stderr: stderr.String()}, fmt.Errorf("start pi runner: %w", err)
 	}
 	metadata.PID = cmd.Process.Pid
+	if req.OnStart != nil {
+		req.OnStart(metadata)
+	}
 
 	err := cmd.Wait()
 	metadata.FinishedAt = time.Now()

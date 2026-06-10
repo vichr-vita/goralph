@@ -15,6 +15,7 @@ type Request struct {
 	Quiet       bool
 	Stdout      io.Writer
 	Stderr      io.Writer
+	OnStart     func(Metadata)
 }
 
 // Metadata describes one runner execution.

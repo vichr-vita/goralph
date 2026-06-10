@@ -822,6 +822,50 @@ func (q *Queries) ListTasksByProjectAndStatus(ctx context.Context, arg ListTasks
 	return items, nil
 }
 
+const markRunFailed = `-- name: MarkRunFailed :one
+UPDATE run
+SET status = 'failed',
+    exit_error = ?,
+    heartbeat_at = CURRENT_TIMESTAMP,
+    finished_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE project_id = ? AND id = ? AND status = 'running'
+RETURNING id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at
+`
+
+type MarkRunFailedParams struct {
+	ExitError sql.NullString
+	ProjectID int64
+	ID        int64
+}
+
+func (q *Queries) MarkRunFailed(ctx context.Context, arg MarkRunFailedParams) (Run, error) {
+	row := q.db.QueryRowContext(ctx, markRunFailed, arg.ExitError, arg.ProjectID, arg.ID)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.RunnerName,
+		&i.RunnerVersion,
+		&i.RunnerModel,
+		&i.SessionID,
+		&i.SessionPath,
+		&i.Status,
+		&i.ExitCode,
+		&i.ExitSignal,
+		&i.ExitError,
+		&i.Pid,
+		&i.Host,
+		&i.HeartbeatAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const ping = `-- name: Ping :one
 SELECT 1
 `
@@ -894,6 +938,72 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 		&i.Name,
 		&i.RootPath,
 		&i.Description,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateRunHeartbeat = `-- name: UpdateRunHeartbeat :exec
+UPDATE run
+SET heartbeat_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE project_id = ? AND id = ? AND status = 'running'
+`
+
+type UpdateRunHeartbeatParams struct {
+	ProjectID int64
+	ID        int64
+}
+
+func (q *Queries) UpdateRunHeartbeat(ctx context.Context, arg UpdateRunHeartbeatParams) error {
+	_, err := q.db.ExecContext(ctx, updateRunHeartbeat, arg.ProjectID, arg.ID)
+	return err
+}
+
+const updateRunProcess = `-- name: UpdateRunProcess :one
+UPDATE run
+SET pid = ?,
+    host = ?,
+    heartbeat_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE project_id = ? AND id = ? AND status = 'running'
+RETURNING id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at
+`
+
+type UpdateRunProcessParams struct {
+	Pid       sql.NullInt64
+	Host      string
+	ProjectID int64
+	ID        int64
+}
+
+func (q *Queries) UpdateRunProcess(ctx context.Context, arg UpdateRunProcessParams) (Run, error) {
+	row := q.db.QueryRowContext(ctx, updateRunProcess,
+		arg.Pid,
+		arg.Host,
+		arg.ProjectID,
+		arg.ID,
+	)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.RunnerName,
+		&i.RunnerVersion,
+		&i.RunnerModel,
+		&i.SessionID,
+		&i.SessionPath,
+		&i.Status,
+		&i.ExitCode,
+		&i.ExitSignal,
+		&i.ExitError,
+		&i.Pid,
+		&i.Host,
+		&i.HeartbeatAt,
+		&i.StartedAt,
+		&i.FinishedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
