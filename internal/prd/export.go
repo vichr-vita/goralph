@@ -25,10 +25,12 @@ func ExportTasks(tasks []Task) ([]Item, error) {
 		if err := db.ValidateTaskStatus(task.Status); err != nil {
 			return nil, err
 		}
+		steps := make([]string, len(task.Steps))
+		copy(steps, task.Steps)
 		items = append(items, Item{
 			Category:    task.Category,
 			Description: task.Description,
-			Steps:       append([]string(nil), task.Steps...),
+			Steps:       steps,
 			Passes:      db.TaskStatusPasses(task.Status),
 		})
 	}

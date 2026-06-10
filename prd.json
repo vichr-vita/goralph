@@ -167,7 +167,7 @@
       "Write to stdout when no file is provided",
       "Write valid pretty JSON when a file is provided"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "cli",

@@ -381,6 +381,61 @@ func TestPRDImportReplaceAndAppendModes(t *testing.T) {
 	}
 }
 
+func TestPRDExportWritesStdoutAndFile(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	_, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	prdPath := writePRDFile(t, `[
+		{"category":"cli","description":"pending task","steps":["second","first"],"passes":false},
+		{"category":"db","description":"passed task","steps":[],"passes":true}
+	]`)
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+
+	reorderTaskSteps(t, dbPath)
+
+	stdout := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "export"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd export stdout: %v", err)
+	}
+	if !strings.HasPrefix(stdout.String(), "[\n  {") {
+		t.Fatalf("prd export stdout = %q, want pretty JSON array", stdout.String())
+	}
+	assertExportedPRD(t, []byte(stdout.String()))
+
+	exportPath := filepath.Join(t.TempDir(), "exported.json")
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "export", exportPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd export file: %v", err)
+	}
+	data, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("read exported PRD: %v", err)
+	}
+	if !strings.HasPrefix(string(data), "[\n  {") {
+		t.Fatalf("prd export file = %q, want pretty JSON array", string(data))
+	}
+	assertExportedPRD(t, data)
+}
+
 func TestDBPathPrintsResolvedDatabasePath(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -489,6 +544,55 @@ type importedTaskRow struct {
 	description string
 	status      string
 	steps       string
+}
+
+func reorderTaskSteps(t *testing.T, dbPath string) {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	for _, query := range []string{
+		"UPDATE task_step SET position = 10 WHERE description = 'second'",
+		"UPDATE task_step SET position = 1 WHERE description = 'first'",
+		"UPDATE task_step SET position = 2 WHERE description = 'second'",
+	} {
+		if _, err := database.Exec(query); err != nil {
+			t.Fatalf("reorder task steps: %v", err)
+		}
+	}
+}
+
+func assertExportedPRD(t *testing.T, data []byte) {
+	t.Helper()
+
+	var items []struct {
+		Category    string   `json:"category"`
+		Description string   `json:"description"`
+		Steps       []string `json:"steps"`
+		Passes      bool     `json:"passes"`
+	}
+	if bytes.Contains(data, []byte(`"steps": null`)) {
+		t.Fatalf("exported PRD has null steps: %s", data)
+	}
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("decode exported PRD: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("exported item count = %d, want 2", len(items))
+	}
+	if items[0].Category != "cli" || items[0].Description != "pending task" || items[0].Passes {
+		t.Fatalf("first exported item = %+v, want pending cli task", items[0])
+	}
+	if len(items[0].Steps) != 2 || items[0].Steps[0] != "first" || items[0].Steps[1] != "second" {
+		t.Fatalf("first exported steps = %+v, want position order", items[0].Steps)
+	}
+	if items[1].Category != "db" || items[1].Description != "passed task" || !items[1].Passes || len(items[1].Steps) != 0 {
+		t.Fatalf("second exported item = %+v, want passed db task with no steps", items[1])
+	}
 }
 
 func writePRDFile(t *testing.T, content string) string {

@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"database/sql"
 )
 
 const countTasksByProject = `-- name: CountTasksByProject :one
@@ -142,6 +143,56 @@ func (q *Queries) GetProjectByRootPath(ctx context.Context, rootPath string) (Pr
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listTaskPRDRowsByProject = `-- name: ListTaskPRDRowsByProject :many
+SELECT
+    t.id,
+    t.category,
+    t.description,
+    t.status,
+    ts.description AS step_description
+FROM task t
+LEFT JOIN task_step ts ON ts.task_id = t.id
+WHERE t.project_id = ?
+ORDER BY t.id, ts.position
+`
+
+type ListTaskPRDRowsByProjectRow struct {
+	ID              int64
+	Category        string
+	Description     string
+	Status          string
+	StepDescription sql.NullString
+}
+
+func (q *Queries) ListTaskPRDRowsByProject(ctx context.Context, projectID int64) ([]ListTaskPRDRowsByProjectRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTaskPRDRowsByProject, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTaskPRDRowsByProjectRow
+	for rows.Next() {
+		var i ListTaskPRDRowsByProjectRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Category,
+			&i.Description,
+			&i.Status,
+			&i.StepDescription,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const ping = `-- name: Ping :one

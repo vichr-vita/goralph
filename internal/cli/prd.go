@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -24,6 +25,7 @@ func newPRDCommand() *cobra.Command {
 
 	cmd.AddCommand(newPRDValidateCommand())
 	cmd.AddCommand(newPRDImportCommand())
+	cmd.AddCommand(newPRDExportCommand())
 
 	return cmd
 }
@@ -89,6 +91,40 @@ func newPRDImportCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&appendMode, "append", false, "append imported tasks without deleting current tasks")
 
 	return cmd
+}
+
+func newPRDExportCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "export [file]",
+		Short: "Export current project tasks as PRD JSON",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			project, err := projectFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+			settings, err := settingsFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			items, err := exportPRDItems(cmd.Context(), settings.DBPath, project.ID)
+			if err != nil {
+				return err
+			}
+			data, err := json.MarshalIndent(items, "", "  ")
+			if err != nil {
+				return fmt.Errorf("encode PRD export: %w", err)
+			}
+			data = append(data, '\n')
+
+			if len(args) == 0 {
+				_, err = cmd.OutOrStdout().Write(data)
+				return err
+			}
+			return os.WriteFile(args[0], data, 0o600)
+		},
+	}
 }
 
 func isPRDValidateCommand(cmd *cobra.Command) bool {
@@ -194,6 +230,44 @@ func importPRDItems(ctx context.Context, dbPath string, projectID int64, items [
 	committed = true
 
 	return importResult{Imported: len(items), Mode: mode}, nil
+}
+
+func exportPRDItems(ctx context.Context, dbPath string, projectID int64) ([]prd.Item, error) {
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+	defer database.Close()
+
+	rows, err := sqlc.New(database).ListTaskPRDRowsByProject(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list PRD tasks: %w", err)
+	}
+
+	tasks := make([]prd.Task, 0)
+	taskIndexByID := make(map[int64]int)
+	for _, row := range rows {
+		index, ok := taskIndexByID[row.ID]
+		if !ok {
+			index = len(tasks)
+			taskIndexByID[row.ID] = index
+			tasks = append(tasks, prd.Task{
+				Category:    row.Category,
+				Description: row.Description,
+				Steps:       []string{},
+				Status:      row.Status,
+			})
+		}
+		if row.StepDescription.Valid {
+			tasks[index].Steps = append(tasks[index].Steps, row.StepDescription.String)
+		}
+	}
+
+	items, err := prd.ExportTasks(tasks)
+	if err != nil {
+		return nil, fmt.Errorf("map PRD tasks: %w", err)
+	}
+	return items, nil
 }
 
 func stdinIsTerminal(cmd *cobra.Command) bool {
