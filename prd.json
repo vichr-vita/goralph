@@ -229,7 +229,7 @@
       "Exclude in_progress tasks from new selection",
       "Return a no eligible tasks outcome when no eligible tasks remain"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "runner",

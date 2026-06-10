@@ -37,6 +37,13 @@ SELECT id, project_id, category, description, status, progress_report, created_a
 FROM task
 WHERE project_id = ? AND id = ?;
 
+-- name: GetNextEligibleTaskByProject :one
+SELECT id, project_id, category, description, status, progress_report, created_at, updated_at
+FROM task
+WHERE project_id = ? AND status IN ('pending', 'failed')
+ORDER BY id
+LIMIT 1;
+
 -- name: ListTaskStepsByTask :many
 SELECT id, task_id, position, description, created_at, updated_at
 FROM task_step

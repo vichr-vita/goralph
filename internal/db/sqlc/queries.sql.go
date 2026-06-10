@@ -203,6 +203,30 @@ func (q *Queries) GetActiveRunByProject(ctx context.Context, projectID int64) (R
 	return i, err
 }
 
+const getNextEligibleTaskByProject = `-- name: GetNextEligibleTaskByProject :one
+SELECT id, project_id, category, description, status, progress_report, created_at, updated_at
+FROM task
+WHERE project_id = ? AND status IN ('pending', 'failed')
+ORDER BY id
+LIMIT 1
+`
+
+func (q *Queries) GetNextEligibleTaskByProject(ctx context.Context, projectID int64) (Task, error) {
+	row := q.db.QueryRowContext(ctx, getNextEligibleTaskByProject, projectID)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Category,
+		&i.Description,
+		&i.Status,
+		&i.ProgressReport,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getProjectByRootPath = `-- name: GetProjectByRootPath :one
 SELECT id, name, root_path, description, created_at, updated_at
 FROM project
