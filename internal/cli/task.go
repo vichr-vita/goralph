@@ -54,6 +54,11 @@ func newTaskCommand() *cobra.Command {
 	cmd.AddCommand(newTaskShowCommand())
 	cmd.AddCommand(newTaskAddCommand())
 	cmd.AddCommand(newTaskUpdateCommand())
+	cmd.AddCommand(newTaskLifecycleCommand("start", db.TaskStatusInProgress, "Set a task in progress", false))
+	cmd.AddCommand(newTaskLifecycleCommand("pass", db.TaskStatusPassed, "Set a task passed", false))
+	cmd.AddCommand(newTaskLifecycleCommand("fail", db.TaskStatusFailed, "Set a task failed", true))
+	cmd.AddCommand(newTaskLifecycleCommand("block", db.TaskStatusBlocked, "Set a task blocked", true))
+	cmd.AddCommand(newTaskLifecycleCommand("unblock", db.TaskStatusPending, "Set a task pending", false))
 
 	return cmd
 }
@@ -234,6 +239,53 @@ func newTaskUpdateCommand() *cobra.Command {
 	return cmd
 }
 
+func newTaskLifecycleCommand(name string, status db.TaskStatus, short string, requireReason bool) *cobra.Command {
+	var reason string
+
+	cmd := &cobra.Command{
+		Use:   name + " <id>",
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := parseTaskID(args[0])
+			if err != nil {
+				return err
+			}
+			reason = strings.TrimSpace(reason)
+			if requireReason && reason == "" {
+				return errors.New("reason cannot be empty")
+			}
+
+			project, err := projectFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+			settings, err := settingsFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			updates := taskUpdates{
+				Status:                 string(status),
+				StatusChanged:          true,
+				ProgressSummary:        reason,
+				ProgressSummaryChanged: requireReason,
+			}
+			task, err := updateTask(cmd.Context(), settings.DBPath, project.ID, id, updates)
+			if err != nil {
+				return err
+			}
+			return writeTask(cmd, task)
+		},
+	}
+	if requireReason {
+		cmd.Flags().StringVar(&reason, "reason", "", "progress reason")
+		_ = cmd.MarkFlagRequired("reason")
+	}
+
+	return cmd
+}
+
 func listTasks(ctx context.Context, dbPath string, projectID int64, status string) ([]taskOutput, error) {
 	database, err := db.Open(dbPath)
 	if err != nil {
@@ -330,20 +382,22 @@ func addTask(ctx context.Context, dbPath string, projectID int64, category strin
 }
 
 type taskUpdates struct {
-	Category              string
-	CategoryChanged       bool
-	Description           string
-	DescriptionChanged    bool
-	Status                string
-	StatusChanged         bool
-	ProgressReport        string
-	ProgressReportChanged bool
-	Steps                 []string
-	StepsChanged          bool
+	Category               string
+	CategoryChanged        bool
+	Description            string
+	DescriptionChanged     bool
+	Status                 string
+	StatusChanged          bool
+	ProgressReport         string
+	ProgressReportChanged  bool
+	ProgressSummary        string
+	ProgressSummaryChanged bool
+	Steps                  []string
+	StepsChanged           bool
 }
 
 func (u taskUpdates) changed() bool {
-	return u.CategoryChanged || u.DescriptionChanged || u.StatusChanged || u.ProgressReportChanged || u.StepsChanged
+	return u.CategoryChanged || u.DescriptionChanged || u.StatusChanged || u.ProgressReportChanged || u.ProgressSummaryChanged || u.StepsChanged
 }
 
 func updateTask(ctx context.Context, dbPath string, projectID int64, taskID int64, updates taskUpdates) (taskOutput, error) {
@@ -418,6 +472,15 @@ func updateTask(ctx context.Context, dbPath string, projectID int64, taskID int6
 		}
 		if err := replaceTaskSteps(ctx, queries, taskID, updates.Steps); err != nil {
 			return taskOutput{}, err
+		}
+	}
+	if updates.ProgressSummaryChanged {
+		if _, err := queries.CreateProgress(ctx, sqlc.CreateProgressParams{
+			ProjectID: projectID,
+			TaskID:    sql.NullInt64{Int64: taskID, Valid: true},
+			Summary:   updates.ProgressSummary,
+		}); err != nil {
+			return taskOutput{}, fmt.Errorf("record task %d progress: %w", taskID, err)
 		}
 	}
 

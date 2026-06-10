@@ -21,6 +21,33 @@ func (q *Queries) CountTasksByProject(ctx context.Context, projectID int64) (int
 	return count, err
 }
 
+const createProgress = `-- name: CreateProgress :one
+INSERT INTO progress (project_id, task_id, summary)
+VALUES (?, ?, ?)
+RETURNING id, project_id, task_id, run_id, summary, created_at, updated_at
+`
+
+type CreateProgressParams struct {
+	ProjectID int64
+	TaskID    sql.NullInt64
+	Summary   string
+}
+
+func (q *Queries) CreateProgress(ctx context.Context, arg CreateProgressParams) (Progress, error) {
+	row := q.db.QueryRowContext(ctx, createProgress, arg.ProjectID, arg.TaskID, arg.Summary)
+	var i Progress
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.RunID,
+		&i.Summary,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createProject = `-- name: CreateProject :one
 INSERT INTO project (name, root_path)
 VALUES (?, ?)

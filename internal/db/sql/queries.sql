@@ -78,6 +78,11 @@ INSERT INTO task_step (task_id, position, description)
 VALUES (?, ?, ?)
 RETURNING id, task_id, position, description, created_at, updated_at;
 
+-- name: CreateProgress :one
+INSERT INTO progress (project_id, task_id, summary)
+VALUES (?, ?, ?)
+RETURNING id, project_id, task_id, run_id, summary, created_at, updated_at;
+
 -- name: DeleteTaskStepsByTask :exec
 DELETE FROM task_step
 WHERE task_id = ?;

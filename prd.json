@@ -203,7 +203,7 @@
       "Implement goralph task unblock <id> as an alias for setting status pending",
       "Allow goralph task update <id> --status pending as the non-alias unblock path"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "cli",

@@ -594,6 +594,90 @@ func TestTaskUpdateRejectsInvalidStatusBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestTaskLifecycleShortcutCommands(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	prdPath := writePRDFile(t, `[{"category":"cli","description":"shortcut me","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	taskID := fetchImportedTasks(t, dbPath, repoRoot)[0].id
+	taskIDArg := strconv.FormatInt(taskID, 10)
+
+	for _, tc := range []struct {
+		args       []string
+		wantStatus string
+	}{
+		{[]string{"task", "start", taskIDArg}, "in_progress"},
+		{[]string{"task", "pass", taskIDArg}, "passed"},
+		{[]string{"task", "block", taskIDArg, "--reason", "waiting on review"}, "blocked"},
+		{[]string{"task", "unblock", taskIDArg}, "pending"},
+		{[]string{"task", "fail", taskIDArg, "--reason", "tests failed"}, "failed"},
+		{[]string{"task", "update", taskIDArg, "--status", "pending"}, "pending"},
+	} {
+		cmd := NewRootCommand()
+		cmd.SetArgs(append([]string{"--db", dbPath}, tc.args...))
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("execute %v: %v", tc.args, err)
+		}
+		tasks := fetchImportedTasks(t, dbPath, repoRoot)
+		if len(tasks) != 1 || tasks[0].status != tc.wantStatus {
+			t.Fatalf("tasks after %v = %+v, want status %s", tc.args, tasks, tc.wantStatus)
+		}
+	}
+
+	progress := fetchTaskProgressSummaries(t, dbPath, taskID)
+	if strings.Join(progress, ",") != "tests failed,waiting on review" {
+		t.Fatalf("progress = %+v, want fail and block reasons newest first", progress)
+	}
+}
+
+func TestTaskLifecycleShortcutRequiresReason(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	dbPath := filepath.Join(t.TempDir(), "db", "ralph.db")
+	prdPath := writePRDFile(t, `[{"category":"cli","description":"shortcut me","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	taskID := fetchImportedTasks(t, dbPath, repoRoot)[0].id
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "task", "fail", strconv.FormatInt(taskID, 10), "--reason", "   "})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "reason cannot be empty") {
+		t.Fatalf("task fail error = %v, want reason cannot be empty", err)
+	}
+
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 || tasks[0].status != "pending" {
+		t.Fatalf("stored tasks after invalid fail = %+v, want pending", tasks)
+	}
+}
+
 func TestTaskShowPrintsDetailsAndLatestProgress(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -770,6 +854,35 @@ func seedTaskProgress(t *testing.T, dbPath string, taskID int64, progressReport 
 			t.Fatalf("insert task progress: %v", err)
 		}
 	}
+}
+
+func fetchTaskProgressSummaries(t *testing.T, dbPath string, taskID int64) []string {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	rows, err := database.Query("SELECT summary FROM progress WHERE task_id = ? ORDER BY created_at DESC, id DESC", taskID)
+	if err != nil {
+		t.Fatalf("query task progress: %v", err)
+	}
+	defer rows.Close()
+
+	var summaries []string
+	for rows.Next() {
+		var summary string
+		if err := rows.Scan(&summary); err != nil {
+			t.Fatalf("scan task progress: %v", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate task progress: %v", err)
+	}
+	return summaries
 }
 
 func reorderTaskSteps(t *testing.T, dbPath string) {
