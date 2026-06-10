@@ -21,6 +21,48 @@ goralph --help
 
 The default runner command is `pi -p <generated-prompt>`. Use `--config`, user config, or project config when you need a different runner.
 
+## Developer setup and quality commands
+
+Install code-generation and migration tools into your Go bin directory:
+
+```sh
+go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+go install github.com/pressly/goose/v3/cmd/goose@latest
+```
+
+Ensure `$(go env GOPATH)/bin` or your configured `GOBIN` is on `PATH`:
+
+```sh
+sqlc version
+goose --version
+```
+
+Regenerate sqlc query code after changing `internal/db/sql/schema.sql`, `internal/db/sql/queries.sql`, or `sqlc.yaml`:
+
+```sh
+sqlc generate
+```
+
+Run development migrations through the goralph CLI so the same embedded Goose migrations used by the app are applied:
+
+```sh
+go run ./cmd/goralph --db .ralph/dev.db db migrate
+```
+
+For a fresh local development database:
+
+```sh
+go run ./cmd/goralph --db .ralph/dev.db db reset --force
+```
+
+Baseline verification before committing:
+
+```sh
+go test ./...
+```
+
+Automated tests must not invoke real Pi. Use fake runner seams, temp configs, or runner command overrides for tests that exercise run flows.
+
 ## Configuration examples
 
 goralph reads YAML config from `$XDG_CONFIG_HOME/goralph/config.yaml` or `~/.config/goralph/config.yaml`, then overlays the nearest `.ralph/config.yaml` found while walking up from the current directory. Use `--config <path>` to load one explicit config file instead of user/project discovery.

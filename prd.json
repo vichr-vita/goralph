@@ -628,6 +628,6 @@
       "Document go test ./... as the baseline verification command",
       "Document that tests must not invoke real Pi"
     ],
-    "passes": false
+    "passes": true
   }
 ]
