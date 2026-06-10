@@ -505,7 +505,7 @@
       "Test duplicate descriptions are rejected",
       "Test import replace and append behavior against a temp database"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "testing",
