@@ -1934,6 +1934,55 @@ func TestRunOneRequiresCleanWorktreeUnlessAllowed(t *testing.T) {
 	assertRunCount(t, dbPath, 1)
 }
 
+func TestRunOneAcceptsCleanCommittedPostRunState(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"commits cleanly","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	committedPath := filepath.Join(repoRoot, "committed-after-run.txt")
+	runnerScript := "#!/bin/sh\nset -e\nprintf committed > " + strconv.Quote(committedPath) + "\ngit -C " + strconv.Quote(repoRoot) + " add " + strconv.Quote(committedPath) + "\ngit -C " + strconv.Quote(repoRoot) + " -c user.name='Goralph Test' -c user.email='goralph@example.invalid' commit --quiet -m 'agent clean commit'\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	viper.Reset()
+
+	stdout := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "one"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run one clean committed: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Status: succeeded") {
+		t.Fatalf("run output = %q, want succeeded", stdout.String())
+	}
+	assertRunStatus(t, dbPath, "succeeded", "")
+	assertCleanGitWorktree(t, repoRoot)
+}
+
 func TestRunOneFailsWhenAgentLeavesDirtyWorktree(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -2999,6 +3048,47 @@ func assertRunCount(t *testing.T, dbPath string, want int) {
 	}
 	if got != want {
 		t.Fatalf("run count = %d, want %d", got, want)
+	}
+}
+
+func assertRunStatus(t *testing.T, dbPath string, wantStatus string, wantExitErrorContains string) {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	var status string
+	var exitError sql.NullString
+	if err := database.QueryRow("SELECT status, exit_error FROM run ORDER BY id DESC LIMIT 1").Scan(&status, &exitError); err != nil {
+		t.Fatalf("query latest run: %v", err)
+	}
+	if status != wantStatus {
+		t.Fatalf("run status = %q, want %q", status, wantStatus)
+	}
+	if wantExitErrorContains == "" {
+		if exitError.Valid {
+			t.Fatalf("run exit_error = %q, want null", exitError.String)
+		}
+		return
+	}
+	if !exitError.Valid || !strings.Contains(exitError.String, wantExitErrorContains) {
+		t.Fatalf("run exit_error = %v, want contains %q", exitError, wantExitErrorContains)
+	}
+}
+
+func assertCleanGitWorktree(t *testing.T, repoRoot string) {
+	t.Helper()
+
+	cmd := exec.Command("git", "-C", repoRoot, "status", "--porcelain")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	if len(out) != 0 {
+		t.Fatalf("git status --porcelain = %q, want clean", string(out))
 	}
 }
 

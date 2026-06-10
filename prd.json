@@ -554,7 +554,7 @@
       "Verify dirty post-run worktrees mark runs failed",
       "Verify clean committed post-run state is accepted"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "testing",
