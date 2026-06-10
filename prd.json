@@ -307,7 +307,7 @@
       "Instruct the agent to commit the feature",
       "Instruct the agent to output <promise>COMPLETE</promise> when all work is complete"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

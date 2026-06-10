@@ -75,7 +75,7 @@ func newRunOneCommand(quiet *bool) *cobra.Command {
 				return err
 			}
 
-			run, ran, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, *quiet, nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			run, ran, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			if !ran {
 				_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
 				return printErr
@@ -105,7 +105,7 @@ func newRunAllCommand(quiet *bool) *cobra.Command {
 			runs := 0
 			seen := map[int64]struct{}{}
 			for {
-				run, ran, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, *quiet, seen, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				run, ran, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, seen, cmd.OutOrStdout(), cmd.ErrOrStderr())
 				if !ran {
 					if runs == 0 {
 						_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
@@ -128,7 +128,7 @@ func newRunAllCommand(quiet *bool) *cobra.Command {
 	}
 }
 
-func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, quiet bool, seen map[int64]struct{}, stdout io.Writer, stderr io.Writer) (runOutput, bool, error) {
+func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, feedbackCommands []string, quiet bool, seen map[int64]struct{}, stdout io.Writer, stderr io.Writer) (runOutput, bool, error) {
 	database, err := db.Open(dbPath)
 	if err != nil {
 		return runOutput{}, false, fmt.Errorf("open database: %w", err)
@@ -150,6 +150,17 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 		seen[selection.Task.ID] = struct{}{}
 	}
 
+	promptTask, err := promptTaskFromRow(ctx, queries, selection.Task)
+	if err != nil {
+		return runOutput{}, true, err
+	}
+	prompt := loop.GenerateAgentPrompt(loop.PromptContract{
+		ProjectName:      project.Name,
+		ProjectRootPath:  project.RootPath,
+		AssignedTask:     &promptTask,
+		FeedbackCommands: feedbackCommands,
+	})
+
 	host, _ := os.Hostname()
 	started, err := queries.CreateRun(ctx, sqlc.CreateRunParams{
 		ProjectID:  project.ID,
@@ -162,7 +173,7 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 	}
 
 	result, runErr := pi.New(runnerCommand, runnerArgs).Run(ctx, runner.Request{
-		Prompt:  promptForTask(selection.Task),
+		Prompt:  prompt,
 		WorkDir: project.RootPath,
 		Quiet:   quiet,
 		Stdout:  stdout,
@@ -203,8 +214,38 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 	return runOutputFromRow(finished), true, nil
 }
 
-func promptForTask(task sqlc.Task) string {
-	return fmt.Sprintf("Task ID: %d\nCategory: %s\nDescription: %s\n", task.ID, task.Category, task.Description)
+func promptTaskFromRow(ctx context.Context, queries *sqlc.Queries, task sqlc.Task) (loop.PromptTask, error) {
+	steps, err := queries.ListTaskStepsByTask(ctx, task.ID)
+	if err != nil {
+		return loop.PromptTask{}, fmt.Errorf("list task %d steps: %w", task.ID, err)
+	}
+	progress, err := queries.ListLatestProgressByTask(ctx, sqlc.ListLatestProgressByTaskParams{
+		TaskID: sql.NullInt64{Int64: task.ID, Valid: true},
+		Limit:  latestProgressLimit,
+	})
+	if err != nil {
+		return loop.PromptTask{}, fmt.Errorf("list task %d progress: %w", task.ID, err)
+	}
+
+	out := loop.PromptTask{
+		ID:             task.ID,
+		Category:       task.Category,
+		Description:    task.Description,
+		Status:         task.Status,
+		ProgressReport: task.ProgressReport,
+		Steps:          make([]string, 0, len(steps)),
+		LatestProgress: make([]loop.PromptProgress, 0, len(progress)),
+	}
+	for _, step := range steps {
+		out.Steps = append(out.Steps, step.Description)
+	}
+	for _, item := range progress {
+		out.LatestProgress = append(out.LatestProgress, loop.PromptProgress{
+			Summary:   item.Summary,
+			CreatedAt: item.CreatedAt,
+		})
+	}
+	return out, nil
 }
 
 func statusForRun(ctx context.Context, metadata runner.Metadata, err error) string {

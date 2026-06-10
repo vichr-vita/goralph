@@ -829,7 +829,10 @@ func TestRunOneCreatesAndFinishesRunRecord(t *testing.T) {
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
-	t.Setenv("GORALPH_RUNNER_COMMAND", runnerPath)
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\nfeedback_commands:\n  - go test ./...\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 
 	prdPath := writePRDFile(t, `[
 		{"category":"runner","description":"track me","steps":["one"],"passes":false}
@@ -842,10 +845,12 @@ func TestRunOneCreatesAndFinishesRunRecord(t *testing.T) {
 		t.Fatalf("execute prd import: %v", err)
 	}
 	taskID := fetchImportedTasks(t, dbPath, repoRoot)[0].id
+	seedTaskProgress(t, dbPath, taskID, "half done", []string{"latest note"})
+	viper.Reset()
 
 	stdout := &bytes.Buffer{}
 	cmd = NewRootCommand()
-	cmd.SetArgs([]string{"--db", dbPath, "run", "--quiet", "one"})
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "one"})
 	cmd.SetOut(stdout)
 	cmd.SetErr(&bytes.Buffer{})
 	if err := cmd.Execute(); err != nil {
@@ -859,8 +864,11 @@ func TestRunOneCreatesAndFinishesRunRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read prompt: %v", err)
 	}
-	if !strings.Contains(string(promptBytes), "Description: track me") {
-		t.Fatalf("prompt = %q, want task description", string(promptBytes))
+	prompt := string(promptBytes)
+	for _, want := range []string{"Ralph loop agent prompt contract", "Name: sample-repo", "Root path: " + repoRoot, "Assigned task:", "Description: track me", "1. one", "Progress report: half done", "latest note", "go test ./...", "goralph task start <task-id>", "goralph progress add --task <task-id>", "goralph task pass <task-id>", "goralph task fail <task-id>", "goralph task block <task-id>", "Work on only one feature.", "Commit the feature.", "<promise>COMPLETE</promise>"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
 	}
 
 	database, err := sql.Open("sqlite", dbPath)
