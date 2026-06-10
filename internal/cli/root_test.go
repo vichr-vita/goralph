@@ -916,6 +916,158 @@ func TestRunOneCreatesAndFinishesRunRecord(t *testing.T) {
 	}
 }
 
+func TestRunOneTaskFlagForcesSpecifiedTask(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	promptPath := filepath.Join(tempDir, "prompt.txt")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	prdPath := writePRDFile(t, `[
+		{"category":"runner","description":"default first","steps":["one"],"passes":false},
+		{"category":"runner","description":"forced second","steps":["two"],"passes":false}
+	]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 2 {
+		t.Fatalf("task count = %d, want 2", len(tasks))
+	}
+	forcedTaskID := tasks[1].id
+	runnerScript := "#!/bin/sh\nfor last do :; done\nprintf '%s' \"$last\" > " + strconv.Quote(promptPath) + "\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(forcedTaskID, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	viper.Reset()
+
+	stdout := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "one", "--task", strconv.FormatInt(forcedTaskID, 10)})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run one --task: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Task: "+strconv.FormatInt(forcedTaskID, 10)) || !strings.Contains(stdout.String(), "Status: succeeded") {
+		t.Fatalf("run output = %q, want forced task succeeded", stdout.String())
+	}
+
+	prompt := readTestFile(t, promptPath)
+	for _, want := range []string{"Forced task from --task:", "Task ID: " + strconv.FormatInt(forcedTaskID, 10), "Description: forced second", "1. two"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("forced prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unwanted := range []string{"Eligible tasks, highest priority first", "Description: default first"} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("forced prompt contains %q:\n%s", unwanted, prompt)
+		}
+	}
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	var runTaskID sql.NullInt64
+	if err := database.QueryRow("SELECT task_id FROM run").Scan(&runTaskID); err != nil {
+		t.Fatalf("query run task: %v", err)
+	}
+	if !runTaskID.Valid || runTaskID.Int64 != forcedTaskID {
+		t.Fatalf("run task id = %v, want %d", runTaskID, forcedTaskID)
+	}
+	var firstStatus, secondStatus string
+	if err := database.QueryRow("SELECT status FROM task WHERE id = ?", tasks[0].id).Scan(&firstStatus); err != nil {
+		t.Fatalf("query first task status: %v", err)
+	}
+	if err := database.QueryRow("SELECT status FROM task WHERE id = ?", forcedTaskID).Scan(&secondStatus); err != nil {
+		t.Fatalf("query forced task status: %v", err)
+	}
+	if firstStatus != "pending" || secondStatus != "passed" {
+		t.Fatalf("task statuses = %q, %q; want pending, passed", firstStatus, secondStatus)
+	}
+}
+
+func TestRunOneTaskFlagRejectsUnknownOrOtherProjectTask(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "source-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"source task","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+
+	runnerPath := filepath.Join(tempDir, "should-not-run.sh")
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nexit 99\n"), 0o700); err != nil {
+		t.Fatalf("write runner: %v", err)
+	}
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, otherWorkDir := createTestGitWorkDir(t, "other-repo")
+	chdir(t, otherWorkDir)
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "one", "--task", strconv.FormatInt(tasks[0].id, 10)})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "task "+strconv.FormatInt(tasks[0].id, 10)+" not found") {
+		t.Fatalf("run one --task other project error = %v, want task not found", err)
+	}
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "one", "--task", "999999"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "task 999999 not found") {
+		t.Fatalf("run one --task unknown error = %v, want task not found", err)
+	}
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "one", "--task", "0"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "invalid task id") {
+		t.Fatalf("run one --task zero error = %v, want invalid task id", err)
+	}
+}
+
 func TestRunOneReportsNoEligibleTasks(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)

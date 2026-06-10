@@ -333,7 +333,7 @@
       "Allow the specified task even when default agent selection would choose another task",
       "Reject missing or unknown task IDs"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

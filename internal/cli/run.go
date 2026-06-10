@@ -62,7 +62,8 @@ func newRunCommand() *cobra.Command {
 }
 
 func newRunOneCommand(quiet *bool) *cobra.Command {
-	return &cobra.Command{
+	var taskID int64
+	cmd := &cobra.Command{
 		Use:   "one",
 		Short: "Run one eligible task turn",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -75,7 +76,15 @@ func newRunOneCommand(quiet *bool) *cobra.Command {
 				return err
 			}
 
-			run, ran, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			var forcedTaskID *int64
+			if cmd.Flags().Changed("task") {
+				if taskID <= 0 {
+					return fmt.Errorf("invalid task id %q", strconv.FormatInt(taskID, 10))
+				}
+				forcedTaskID = &taskID
+			}
+
+			run, ran, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, forcedTaskID, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			if !ran {
 				_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
 				return printErr
@@ -86,6 +95,8 @@ func newRunOneCommand(quiet *bool) *cobra.Command {
 			return writeRun(cmd, run)
 		},
 	}
+	cmd.Flags().Int64Var(&taskID, "task", 0, "target task id")
+	return cmd
 }
 
 func newRunAllCommand(quiet *bool) *cobra.Command {
@@ -105,7 +116,7 @@ func newRunAllCommand(quiet *bool) *cobra.Command {
 			runs := 0
 			seen := map[int64]struct{}{}
 			for {
-				run, ran, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, seen, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				run, ran, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, seen, nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
 				if !ran {
 					if runs == 0 {
 						_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
@@ -128,7 +139,7 @@ func newRunAllCommand(quiet *bool) *cobra.Command {
 	}
 }
 
-func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, feedbackCommands []string, quiet bool, seen map[int64]struct{}, stdout io.Writer, stderr io.Writer) (runOutput, bool, error) {
+func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, feedbackCommands []string, quiet bool, seen map[int64]struct{}, forcedTaskID *int64, stdout io.Writer, stderr io.Writer) (runOutput, bool, error) {
 	database, err := db.Open(dbPath)
 	if err != nil {
 		return runOutput{}, false, fmt.Errorf("open database: %w", err)
@@ -136,36 +147,56 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 	defer database.Close()
 
 	queries := sqlc.New(database)
-	eligible, err := loop.SelectEligibleTasks(ctx, queries, project.ID)
-	if err != nil {
-		return runOutput{}, false, err
+	promptContract := loop.PromptContract{
+		ProjectName:      project.Name,
+		ProjectRootPath:  project.RootPath,
+		FeedbackCommands: feedbackCommands,
 	}
-	eligible = filterSeenTasks(eligible, seen)
-	if len(eligible) == 0 {
-		return runOutput{}, false, nil
-	}
+	beforeStatuses := map[int64]string{}
+	runTaskID := sql.NullInt64{}
 
-	promptTasks := make([]loop.PromptTask, 0, len(eligible))
-	beforeStatuses := make(map[int64]string, len(eligible))
-	for _, task := range eligible {
+	if forcedTaskID != nil {
+		task, err := queries.GetTaskByProjectAndID(ctx, sqlc.GetTaskByProjectAndIDParams{ProjectID: project.ID, ID: *forcedTaskID})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return runOutput{}, true, fmt.Errorf("task %d not found", *forcedTaskID)
+			}
+			return runOutput{}, true, fmt.Errorf("load task %d: %w", *forcedTaskID, err)
+		}
 		promptTask, err := promptTaskFromRow(ctx, queries, task)
 		if err != nil {
 			return runOutput{}, true, err
 		}
-		promptTasks = append(promptTasks, promptTask)
+		promptContract.ForcedTask = &promptTask
 		beforeStatuses[task.ID] = task.Status
+		runTaskID = sql.NullInt64{Int64: task.ID, Valid: true}
+	} else {
+		eligible, err := loop.SelectEligibleTasks(ctx, queries, project.ID)
+		if err != nil {
+			return runOutput{}, false, err
+		}
+		eligible = filterSeenTasks(eligible, seen)
+		if len(eligible) == 0 {
+			return runOutput{}, false, nil
+		}
+
+		promptTasks := make([]loop.PromptTask, 0, len(eligible))
+		for _, task := range eligible {
+			promptTask, err := promptTaskFromRow(ctx, queries, task)
+			if err != nil {
+				return runOutput{}, true, err
+			}
+			promptTasks = append(promptTasks, promptTask)
+			beforeStatuses[task.ID] = task.Status
+		}
+		promptContract.EligibleTasks = promptTasks
 	}
-	prompt := loop.GenerateAgentPrompt(loop.PromptContract{
-		ProjectName:      project.Name,
-		ProjectRootPath:  project.RootPath,
-		EligibleTasks:    promptTasks,
-		FeedbackCommands: feedbackCommands,
-	})
+	prompt := loop.GenerateAgentPrompt(promptContract)
 
 	host, _ := os.Hostname()
 	started, err := queries.CreateRun(ctx, sqlc.CreateRunParams{
 		ProjectID:  project.ID,
-		TaskID:     sql.NullInt64{},
+		TaskID:     runTaskID,
 		RunnerName: pi.Name,
 		Host:       host,
 	})
