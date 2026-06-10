@@ -578,7 +578,7 @@
       "Document run one and run all behavior",
       "Document the agent progress and task update contract"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "documentation",
