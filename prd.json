@@ -67,7 +67,7 @@
       "Ensure destructive reset requires --force",
       "Verify commands work with --db pointing at a temp file"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "database",

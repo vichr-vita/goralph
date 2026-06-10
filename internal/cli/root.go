@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type settingsContextKey struct{}
+
 // NewRootCommand creates the root goralph command.
 func NewRootCommand() *cobra.Command {
 	var cfgFile string
@@ -23,6 +25,10 @@ func NewRootCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			cmd.SetContext(context.WithValue(cmd.Context(), settingsContextKey{}, settings))
+			if isDBCommand(cmd) {
+				return nil
+			}
 			return migrateDatabase(cmd.Context(), settings.DBPath)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -32,6 +38,7 @@ func NewRootCommand() *cobra.Command {
 
 	cmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file path")
 	cmd.PersistentFlags().StringVar(&dbPath, "db", "", "SQLite database path")
+	cmd.AddCommand(newDBCommand())
 
 	return cmd
 }
