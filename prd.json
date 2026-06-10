@@ -516,7 +516,7 @@
       "Verify sqlc query methods for projects, tasks, steps, progress, runs, and feedback commands",
       "Keep tests isolated from the user's real global database"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "testing",
