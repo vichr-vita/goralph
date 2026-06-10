@@ -477,9 +477,17 @@ func updateTask(ctx context.Context, dbPath string, projectID int64, taskID int6
 		}
 	}
 	if updates.ProgressSummaryChanged {
+		runRef := sql.NullInt64{}
+		activeRun, err := queries.GetActiveRunByProject(ctx, projectID)
+		if err == nil {
+			runRef = sql.NullInt64{Int64: activeRun.ID, Valid: true}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return taskOutput{}, fmt.Errorf("load active run: %w", err)
+		}
 		if _, err := queries.CreateProgress(ctx, sqlc.CreateProgressParams{
 			ProjectID: projectID,
 			TaskID:    sql.NullInt64{Int64: taskID, Valid: true},
+			RunID:     runRef,
 			Summary:   updates.ProgressSummary,
 		}); err != nil {
 			return taskOutput{}, fmt.Errorf("record task %d progress: %w", taskID, err)

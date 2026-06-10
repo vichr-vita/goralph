@@ -90,6 +90,30 @@ INSERT INTO progress (project_id, task_id, run_id, summary)
 VALUES (?, ?, ?, ?)
 RETURNING id, project_id, task_id, run_id, summary, created_at, updated_at;
 
+-- name: CreateRun :one
+INSERT INTO run (project_id, task_id, runner_name, status, host, started_at, heartbeat_at)
+VALUES (?, ?, ?, 'running', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+RETURNING id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at;
+
+-- name: FinishRun :one
+UPDATE run
+SET runner_name = ?,
+    runner_version = ?,
+    runner_model = ?,
+    session_id = ?,
+    session_path = ?,
+    status = ?,
+    exit_code = ?,
+    exit_signal = ?,
+    exit_error = ?,
+    pid = ?,
+    host = ?,
+    heartbeat_at = CURRENT_TIMESTAMP,
+    finished_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE project_id = ? AND id = ?
+RETURNING id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at;
+
 -- name: GetActiveRunByProject :one
 SELECT id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at
 FROM run

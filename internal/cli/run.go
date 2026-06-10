@@ -6,10 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strconv"
 
 	"goralph/internal/db"
 	"goralph/internal/db/sqlc"
+	"goralph/internal/loop"
+	"goralph/internal/runner"
+	"goralph/internal/runner/pi"
 
 	"github.com/spf13/cobra"
 )
@@ -44,9 +49,175 @@ func newRunCommand() *cobra.Command {
 		Short: "Inspect runner sessions",
 	}
 	cmd.PersistentFlags().BoolVar(&quiet, "quiet", false, "suppress live runner output")
+	cmd.AddCommand(newRunOneCommand(&quiet))
+	cmd.AddCommand(newRunAllCommand(&quiet))
 	cmd.AddCommand(newRunShowCommand())
 
 	return cmd
+}
+
+func newRunOneCommand(quiet *bool) *cobra.Command {
+	return &cobra.Command{
+		Use:   "one",
+		Short: "Run one eligible task turn",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			project, err := projectFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+			settings, err := settingsFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			run, ran, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, *quiet, nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			if !ran {
+				_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
+				return printErr
+			}
+			if err != nil {
+				return err
+			}
+			return writeRun(cmd, run)
+		},
+	}
+}
+
+func newRunAllCommand(quiet *bool) *cobra.Command {
+	return &cobra.Command{
+		Use:   "all",
+		Short: "Run eligible task turns until none remain",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			project, err := projectFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+			settings, err := settingsFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			runs := 0
+			seen := map[int64]struct{}{}
+			for {
+				run, ran, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, *quiet, seen, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				if !ran {
+					if runs == 0 {
+						_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "No eligible task")
+						return printErr
+					}
+					return nil
+				}
+				runs++
+				if err != nil {
+					return err
+				}
+				if err := writeRun(cmd, run); err != nil {
+					return err
+				}
+				if run.TaskID == nil {
+					return nil
+				}
+			}
+		},
+	}
+}
+
+func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, quiet bool, seen map[int64]struct{}, stdout io.Writer, stderr io.Writer) (runOutput, bool, error) {
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return runOutput{}, false, fmt.Errorf("open database: %w", err)
+	}
+	defer database.Close()
+
+	queries := sqlc.New(database)
+	selection, err := loop.SelectEligibleTask(ctx, queries, project.ID)
+	if err != nil {
+		return runOutput{}, false, err
+	}
+	if !selection.HasTask {
+		return runOutput{}, false, nil
+	}
+	if seen != nil {
+		if _, ok := seen[selection.Task.ID]; ok {
+			return runOutput{}, false, nil
+		}
+		seen[selection.Task.ID] = struct{}{}
+	}
+
+	host, _ := os.Hostname()
+	started, err := queries.CreateRun(ctx, sqlc.CreateRunParams{
+		ProjectID:  project.ID,
+		TaskID:     sql.NullInt64{Int64: selection.Task.ID, Valid: true},
+		RunnerName: pi.Name,
+		Host:       host,
+	})
+	if err != nil {
+		return runOutput{}, true, fmt.Errorf("create run: %w", err)
+	}
+
+	result, runErr := pi.New(runnerCommand, runnerArgs).Run(ctx, runner.Request{
+		Prompt:  promptForTask(selection.Task),
+		WorkDir: project.RootPath,
+		Quiet:   quiet,
+		Stdout:  stdout,
+		Stderr:  stderr,
+	})
+	metadata := result.Metadata
+	if metadata.RunnerName == "" {
+		metadata.RunnerName = started.RunnerName
+	}
+	if metadata.Host == "" {
+		metadata.Host = started.Host
+	}
+	if runErr != nil && metadata.ExitError == "" {
+		metadata.ExitError = runErr.Error()
+	}
+
+	finished, finishErr := queries.FinishRun(ctx, sqlc.FinishRunParams{
+		RunnerName:    metadata.RunnerName,
+		RunnerVersion: metadata.RunnerVersion,
+		RunnerModel:   metadata.RunnerModel,
+		SessionID:     metadata.SessionID,
+		SessionPath:   metadata.SessionPath,
+		Status:        statusForRun(ctx, metadata, runErr),
+		ExitCode:      nullInt(int64(metadata.ExitCode), metadata.ExitCode >= 0),
+		ExitSignal:    nullString(metadata.ExitSignal),
+		ExitError:     nullString(metadata.ExitError),
+		Pid:           nullInt(int64(metadata.PID), metadata.PID > 0),
+		Host:          metadata.Host,
+		ProjectID:     project.ID,
+		ID:            started.ID,
+	})
+	if finishErr != nil {
+		return runOutputFromRow(started), true, fmt.Errorf("finish run %d: %w", started.ID, finishErr)
+	}
+	if runErr != nil {
+		return runOutputFromRow(finished), true, runErr
+	}
+	return runOutputFromRow(finished), true, nil
+}
+
+func promptForTask(task sqlc.Task) string {
+	return fmt.Sprintf("Task ID: %d\nCategory: %s\nDescription: %s\n", task.ID, task.Category, task.Description)
+}
+
+func statusForRun(ctx context.Context, metadata runner.Metadata, err error) string {
+	if ctx.Err() != nil {
+		return "cancelled"
+	}
+	if err != nil || metadata.ExitSignal != "" || metadata.ExitError != "" || metadata.ExitCode != 0 {
+		return "failed"
+	}
+	return "succeeded"
+}
+
+func nullString(value string) sql.NullString {
+	return sql.NullString{String: value, Valid: value != ""}
+}
+
+func nullInt(value int64, valid bool) sql.NullInt64 {
+	return sql.NullInt64{Int64: value, Valid: valid}
 }
 
 func newRunShowCommand() *cobra.Command {

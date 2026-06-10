@@ -79,6 +79,51 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 	return i, err
 }
 
+const createRun = `-- name: CreateRun :one
+INSERT INTO run (project_id, task_id, runner_name, status, host, started_at, heartbeat_at)
+VALUES (?, ?, ?, 'running', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+RETURNING id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at
+`
+
+type CreateRunParams struct {
+	ProjectID  int64
+	TaskID     sql.NullInt64
+	RunnerName string
+	Host       string
+}
+
+func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, error) {
+	row := q.db.QueryRowContext(ctx, createRun,
+		arg.ProjectID,
+		arg.TaskID,
+		arg.RunnerName,
+		arg.Host,
+	)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.RunnerName,
+		&i.RunnerVersion,
+		&i.RunnerModel,
+		&i.SessionID,
+		&i.SessionPath,
+		&i.Status,
+		&i.ExitCode,
+		&i.ExitSignal,
+		&i.ExitError,
+		&i.Pid,
+		&i.Host,
+		&i.HeartbeatAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createTask = `-- name: CreateTask :one
 INSERT INTO task (project_id, category, description, status)
 VALUES (?, ?, ?, ?)
@@ -166,6 +211,83 @@ DELETE FROM task WHERE project_id = ?
 func (q *Queries) DeleteTasksByProject(ctx context.Context, projectID int64) error {
 	_, err := q.db.ExecContext(ctx, deleteTasksByProject, projectID)
 	return err
+}
+
+const finishRun = `-- name: FinishRun :one
+UPDATE run
+SET runner_name = ?,
+    runner_version = ?,
+    runner_model = ?,
+    session_id = ?,
+    session_path = ?,
+    status = ?,
+    exit_code = ?,
+    exit_signal = ?,
+    exit_error = ?,
+    pid = ?,
+    host = ?,
+    heartbeat_at = CURRENT_TIMESTAMP,
+    finished_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE project_id = ? AND id = ?
+RETURNING id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at
+`
+
+type FinishRunParams struct {
+	RunnerName    string
+	RunnerVersion string
+	RunnerModel   string
+	SessionID     string
+	SessionPath   string
+	Status        string
+	ExitCode      sql.NullInt64
+	ExitSignal    sql.NullString
+	ExitError     sql.NullString
+	Pid           sql.NullInt64
+	Host          string
+	ProjectID     int64
+	ID            int64
+}
+
+func (q *Queries) FinishRun(ctx context.Context, arg FinishRunParams) (Run, error) {
+	row := q.db.QueryRowContext(ctx, finishRun,
+		arg.RunnerName,
+		arg.RunnerVersion,
+		arg.RunnerModel,
+		arg.SessionID,
+		arg.SessionPath,
+		arg.Status,
+		arg.ExitCode,
+		arg.ExitSignal,
+		arg.ExitError,
+		arg.Pid,
+		arg.Host,
+		arg.ProjectID,
+		arg.ID,
+	)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.RunnerName,
+		&i.RunnerVersion,
+		&i.RunnerModel,
+		&i.SessionID,
+		&i.SessionPath,
+		&i.Status,
+		&i.ExitCode,
+		&i.ExitSignal,
+		&i.ExitError,
+		&i.Pid,
+		&i.Host,
+		&i.HeartbeatAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const getActiveRunByProject = `-- name: GetActiveRunByProject :one

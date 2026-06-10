@@ -813,6 +813,77 @@ func TestProgressAddAndListSupportsTaskFilterJSONAndActiveRun(t *testing.T) {
 	}
 }
 
+func TestRunOneCreatesAndFinishesRunRecord(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	promptPath := filepath.Join(tempDir, "prompt.txt")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	runnerScript := "#!/bin/sh\nfor last do :; done\nprintf '%s' \"$last\" > " + strconv.Quote(promptPath) + "\n"
+	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	t.Setenv("GORALPH_RUNNER_COMMAND", runnerPath)
+
+	prdPath := writePRDFile(t, `[
+		{"category":"runner","description":"track me","steps":["one"],"passes":false}
+	]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	taskID := fetchImportedTasks(t, dbPath, repoRoot)[0].id
+
+	stdout := &bytes.Buffer{}
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "run", "--quiet", "one"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run one: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Status: succeeded") {
+		t.Fatalf("run output = %q, want succeeded", stdout.String())
+	}
+
+	promptBytes, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("read prompt: %v", err)
+	}
+	if !strings.Contains(string(promptBytes), "Description: track me") {
+		t.Fatalf("prompt = %q, want task description", string(promptBytes))
+	}
+
+	database, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	var gotTaskID sql.NullInt64
+	var status string
+	var pid sql.NullInt64
+	var host string
+	var heartbeatAt sql.NullString
+	var startedAt sql.NullString
+	var finishedAt sql.NullString
+	if err := database.QueryRow("SELECT task_id, status, pid, host, heartbeat_at, started_at, finished_at FROM run").Scan(&gotTaskID, &status, &pid, &host, &heartbeatAt, &startedAt, &finishedAt); err != nil {
+		t.Fatalf("query run: %v", err)
+	}
+	if !gotTaskID.Valid || gotTaskID.Int64 != taskID || status != "succeeded" || !pid.Valid || host == "" || !heartbeatAt.Valid || !startedAt.Valid || !finishedAt.Valid {
+		t.Fatalf("run row task=%v status=%q pid=%v host=%q heartbeat=%v started=%v finished=%v", gotTaskID, status, pid, host, heartbeatAt, startedAt, finishedAt)
+	}
+}
+
 func TestRunShowPrintsMetadataProgressAndSessionPath(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
