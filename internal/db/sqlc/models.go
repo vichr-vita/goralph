@@ -3,3 +3,77 @@
 //   sqlc v1.30.0
 
 package sqlc
+
+import (
+	"database/sql"
+)
+
+type FeedbackCommand struct {
+	ID        int64
+	ProjectID int64
+	Name      string
+	Command   string
+	CreatedAt string
+	UpdatedAt string
+}
+
+type Progress struct {
+	ID        int64
+	ProjectID int64
+	TaskID    sql.NullInt64
+	RunID     sql.NullInt64
+	Summary   string
+	CreatedAt string
+	UpdatedAt string
+}
+
+type Project struct {
+	ID          int64
+	Name        string
+	RootPath    string
+	Description string
+	CreatedAt   string
+	UpdatedAt   string
+}
+
+type Run struct {
+	ID            int64
+	ProjectID     int64
+	TaskID        sql.NullInt64
+	RunnerName    string
+	RunnerVersion string
+	RunnerModel   string
+	SessionID     string
+	SessionPath   string
+	Status        string
+	ExitCode      sql.NullInt64
+	ExitSignal    sql.NullString
+	ExitError     sql.NullString
+	Pid           sql.NullInt64
+	Host          string
+	HeartbeatAt   sql.NullString
+	StartedAt     sql.NullString
+	FinishedAt    sql.NullString
+	CreatedAt     string
+	UpdatedAt     string
+}
+
+type Task struct {
+	ID             int64
+	ProjectID      int64
+	Category       string
+	Description    string
+	Status         string
+	ProgressReport string
+	CreatedAt      string
+	UpdatedAt      string
+}
+
+type TaskStep struct {
+	ID          int64
+	TaskID      int64
+	Position    int64
+	Description string
+	CreatedAt   string
+	UpdatedAt   string
+}

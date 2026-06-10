@@ -47,3 +47,35 @@ func TestMigrateFreshDatabaseRecordsGooseVersion(t *testing.T) {
 		t.Fatalf("is_applied = false, want true")
 	}
 }
+
+func TestMigrateFreshDatabaseCreatesNormalizedTables(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "ralph.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	if err := Migrate(context.Background(), database); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+
+	wantTables := []string{
+		"project",
+		"task",
+		"task_step",
+		"progress",
+		"run",
+		"feedback_command",
+	}
+	for _, table := range wantTables {
+		t.Run(table, func(t *testing.T) {
+			var name string
+			if err := database.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&name); err != nil {
+				t.Fatalf("query table %s: %v", table, err)
+			}
+			if name != table {
+				t.Fatalf("table name = %q, want %q", name, table)
+			}
+		})
+	}
+}

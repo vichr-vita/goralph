@@ -80,7 +80,7 @@
       "Create run table with project_id, optional task_id, runner metadata, session metadata, status, exit outcome, pid, host, heartbeat, and timestamps",
       "Create feedback_command table with project_id, name, and command"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "database",
