@@ -542,7 +542,7 @@
       "Test run all stops on blocked or failed by default",
       "Ensure tests never call real Pi"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "testing",

@@ -216,6 +216,10 @@ type activeRunPolicy struct {
 	StaleAfter time.Duration
 }
 
+var newAgentRunner = func(command string, args []string) runner.Runner {
+	return pi.New(command, args)
+}
+
 type activeRunExistsError struct {
 	run    runOutput
 	stale  bool
@@ -536,7 +540,7 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 
 	stopHeartbeat := startRunHeartbeat(ctx, queries, project.ID, started.ID, time.Second)
 	var startErr error
-	result, runErr := pi.New(runnerCommand, runnerArgs).Run(ctx, runner.Request{
+	result, runErr := newAgentRunner(runnerCommand, runnerArgs).Run(ctx, runner.Request{
 		Prompt:  prompt,
 		WorkDir: project.RootPath,
 		Quiet:   quiet,
