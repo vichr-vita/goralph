@@ -136,35 +136,36 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 	defer database.Close()
 
 	queries := sqlc.New(database)
-	selection, err := loop.SelectEligibleTask(ctx, queries, project.ID)
+	eligible, err := loop.SelectEligibleTasks(ctx, queries, project.ID)
 	if err != nil {
 		return runOutput{}, false, err
 	}
-	if !selection.HasTask {
+	eligible = filterSeenTasks(eligible, seen)
+	if len(eligible) == 0 {
 		return runOutput{}, false, nil
 	}
-	if seen != nil {
-		if _, ok := seen[selection.Task.ID]; ok {
-			return runOutput{}, false, nil
-		}
-		seen[selection.Task.ID] = struct{}{}
-	}
 
-	promptTask, err := promptTaskFromRow(ctx, queries, selection.Task)
-	if err != nil {
-		return runOutput{}, true, err
+	promptTasks := make([]loop.PromptTask, 0, len(eligible))
+	beforeStatuses := make(map[int64]string, len(eligible))
+	for _, task := range eligible {
+		promptTask, err := promptTaskFromRow(ctx, queries, task)
+		if err != nil {
+			return runOutput{}, true, err
+		}
+		promptTasks = append(promptTasks, promptTask)
+		beforeStatuses[task.ID] = task.Status
 	}
 	prompt := loop.GenerateAgentPrompt(loop.PromptContract{
 		ProjectName:      project.Name,
 		ProjectRootPath:  project.RootPath,
-		AssignedTask:     &promptTask,
+		EligibleTasks:    promptTasks,
 		FeedbackCommands: feedbackCommands,
 	})
 
 	host, _ := os.Hostname()
 	started, err := queries.CreateRun(ctx, sqlc.CreateRunParams{
 		ProjectID:  project.ID,
-		TaskID:     sql.NullInt64{Int64: selection.Task.ID, Valid: true},
+		TaskID:     sql.NullInt64{},
 		RunnerName: pi.Name,
 		Host:       host,
 	})
@@ -185,6 +186,25 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 	}
 	if metadata.Host == "" {
 		metadata.Host = started.Host
+	}
+	selectedTaskID, verifyErr := verifyAgentTaskUpdate(ctx, queries, project.ID, started.ID, beforeStatuses)
+	if verifyErr != nil {
+		if runErr == nil {
+			runErr = verifyErr
+		}
+	} else {
+		started, err = queries.SetRunTaskID(ctx, sqlc.SetRunTaskIDParams{
+			TaskID:    sql.NullInt64{Int64: selectedTaskID, Valid: true},
+			ProjectID: project.ID,
+			ID:        started.ID,
+		})
+		if err != nil {
+			if runErr == nil {
+				runErr = fmt.Errorf("set run %d task: %w", started.ID, err)
+			}
+		} else if seen != nil {
+			seen[selectedTaskID] = struct{}{}
+		}
 	}
 	if runErr != nil && metadata.ExitError == "" {
 		metadata.ExitError = runErr.Error()
@@ -208,10 +228,84 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 	if finishErr != nil {
 		return runOutputFromRow(started), true, fmt.Errorf("finish run %d: %w", started.ID, finishErr)
 	}
+	if err := verifyFinishedRunMetadata(finished); err != nil {
+		return runOutputFromRow(finished), true, err
+	}
 	if runErr != nil {
 		return runOutputFromRow(finished), true, runErr
 	}
 	return runOutputFromRow(finished), true, nil
+}
+
+func filterSeenTasks(tasks []sqlc.Task, seen map[int64]struct{}) []sqlc.Task {
+	if len(seen) == 0 {
+		return tasks
+	}
+	filtered := make([]sqlc.Task, 0, len(tasks))
+	for _, task := range tasks {
+		if _, ok := seen[task.ID]; !ok {
+			filtered = append(filtered, task)
+		}
+	}
+	return filtered
+}
+
+func verifyAgentTaskUpdate(ctx context.Context, queries *sqlc.Queries, projectID int64, runID int64, beforeStatuses map[int64]string) (int64, error) {
+	candidates := map[int64]struct{}{}
+	progress, err := queries.ListProgressByRun(ctx, sqlc.ListProgressByRunParams{ProjectID: projectID, RunID: sql.NullInt64{Int64: runID, Valid: true}})
+	if err != nil {
+		return 0, fmt.Errorf("verify run %d progress: %w", runID, err)
+	}
+	for _, item := range progress {
+		if !item.TaskID.Valid {
+			continue
+		}
+		if _, ok := beforeStatuses[item.TaskID.Int64]; ok {
+			candidates[item.TaskID.Int64] = struct{}{}
+		}
+	}
+
+	tasks, err := queries.ListTasksByProject(ctx, projectID)
+	if err != nil {
+		return 0, fmt.Errorf("verify run %d task updates: %w", runID, err)
+	}
+	for _, task := range tasks {
+		before, ok := beforeStatuses[task.ID]
+		if ok && task.Status != before {
+			candidates[task.ID] = struct{}{}
+		}
+	}
+
+	if len(candidates) == 0 {
+		return 0, fmt.Errorf("run %d completed without updating an eligible task", runID)
+	}
+	if len(candidates) > 1 {
+		return 0, fmt.Errorf("run %d updated multiple eligible tasks", runID)
+	}
+	for taskID := range candidates {
+		return taskID, nil
+	}
+	return 0, fmt.Errorf("run %d selected task could not be determined", runID)
+}
+
+func verifyFinishedRunMetadata(run sqlc.Run) error {
+	missing := make([]string, 0, 4)
+	if run.Host == "" {
+		missing = append(missing, "host")
+	}
+	if !run.HeartbeatAt.Valid {
+		missing = append(missing, "heartbeat_at")
+	}
+	if !run.StartedAt.Valid {
+		missing = append(missing, "started_at")
+	}
+	if !run.FinishedAt.Valid {
+		missing = append(missing, "finished_at")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("run %d missing metadata: %s", run.ID, strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func promptTaskFromRow(ctx context.Context, queries *sqlc.Queries, task sqlc.Task) (loop.PromptTask, error) {

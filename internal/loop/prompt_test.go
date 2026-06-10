@@ -68,7 +68,7 @@ func TestGenerateAgentPromptIncludesForcedTaskAndEligibleChoice(t *testing.T) {
 			{ID: 2, Category: "db", Description: "retry", Status: "failed"},
 		},
 	})
-	for _, want := range []string{"Eligible non-passed tasks. Choose exactly one:", "Task ID: 1", "Description: pending", "Task ID: 2", "Description: retry"} {
+	for _, want := range []string{"Eligible tasks, highest priority first. Choose exactly one highest-priority task:", "Task ID: 1", "Description: pending", "Task ID: 2", "Description: retry", "If multiple eligible tasks appear, choose the first task unless recent progress shows it is blocked."} {
 		if !strings.Contains(choicePrompt, want) {
 			t.Fatalf("choice prompt missing %q:\n%s", want, choicePrompt)
 		}

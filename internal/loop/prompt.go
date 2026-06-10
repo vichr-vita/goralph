@@ -50,7 +50,7 @@ func GenerateAgentPrompt(contract PromptContract) string {
 		writePromptTask(&b, *contract.AssignedTask)
 		fmt.Fprintf(&b, "\n")
 	} else {
-		fmt.Fprintf(&b, "Eligible non-passed tasks. Choose exactly one:\n")
+		fmt.Fprintf(&b, "Eligible tasks, highest priority first. Choose exactly one highest-priority task:\n")
 		if len(contract.EligibleTasks) == 0 {
 			fmt.Fprintf(&b, "- (none)\n")
 		}
@@ -71,6 +71,7 @@ func GenerateAgentPrompt(contract PromptContract) string {
 
 	fmt.Fprintf(&b, "\nRequired agent behavior:\n")
 	fmt.Fprintf(&b, "- Work on only one feature.\n")
+	fmt.Fprintf(&b, "- If multiple eligible tasks appear, choose the first task unless recent progress shows it is blocked.\n")
 	fmt.Fprintf(&b, "- Before work, call `goralph task start <task-id>`.\n")
 	fmt.Fprintf(&b, "- During or after work, call `goralph progress add --task <task-id> --summary \"<summary>\"`.\n")
 	fmt.Fprintf(&b, "- Before passing task, run relevant configured feedback commands.\n")

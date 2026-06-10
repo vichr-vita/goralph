@@ -833,6 +833,46 @@ func (q *Queries) Ping(ctx context.Context) (int64, error) {
 	return column_1, err
 }
 
+const setRunTaskID = `-- name: SetRunTaskID :one
+UPDATE run
+SET task_id = ?, updated_at = CURRENT_TIMESTAMP
+WHERE project_id = ? AND id = ?
+RETURNING id, project_id, task_id, runner_name, runner_version, runner_model, session_id, session_path, status, exit_code, exit_signal, exit_error, pid, host, heartbeat_at, started_at, finished_at, created_at, updated_at
+`
+
+type SetRunTaskIDParams struct {
+	TaskID    sql.NullInt64
+	ProjectID int64
+	ID        int64
+}
+
+func (q *Queries) SetRunTaskID(ctx context.Context, arg SetRunTaskIDParams) (Run, error) {
+	row := q.db.QueryRowContext(ctx, setRunTaskID, arg.TaskID, arg.ProjectID, arg.ID)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.RunnerName,
+		&i.RunnerVersion,
+		&i.RunnerModel,
+		&i.SessionID,
+		&i.SessionPath,
+		&i.Status,
+		&i.ExitCode,
+		&i.ExitSignal,
+		&i.ExitError,
+		&i.Pid,
+		&i.Host,
+		&i.HeartbeatAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateProject = `-- name: UpdateProject :one
 UPDATE project
 SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP

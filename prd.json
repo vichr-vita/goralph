@@ -321,7 +321,7 @@
       "Verify run metadata and task updates after the turn",
       "Stop after one turn regardless of remaining tasks"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

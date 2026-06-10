@@ -23,3 +23,4 @@
 runner: tracked agent turns as run records; checks: sqlc generate, gofmt, go test ./internal/cli selected, go test ./...
 2026-06-10T16:44:44Z Implemented run list/show/open/export session inspection commands.
 2026-06-10: Implemented Ralph loop agent prompt contract with project/task/progress/feedback context and required agent lifecycle instructions.
+2026-06-10: Implemented run one default agent task selection: eligible-task prompt, no-eligible outcome, one-turn stop, metadata/task update verification, tests passing.
