@@ -1,10 +1,9 @@
+---
+name: use-goralph-run
+description: Use for any project that should be implemented through `goralph run` from PRD tasks. Do not use manual `goralph task start/pass` as the main implementation path unless debugging goralph itself.
+---
+
 # Use goralph run for PRD-driven implementation
-
-## When to use
-
-Use for any project that should be implemented through `goralph run` from PRD tasks.
-
-Do not use manual `goralph task start/pass` as the main implementation path unless debugging goralph itself.
 
 ## Core model
 
