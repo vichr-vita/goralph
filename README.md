@@ -392,6 +392,8 @@ Run safety:
 - Runs require a clean Git worktree before each agent turn.
 - Use `--allow-dirty` to bypass the pre-run dirty-worktree guard.
 - After an agent turn, goralph expects a clean committed state unless dirty runs are allowed.
+- Generated agent prompts require `git status --short` after commit and before `<promise>COMPLETE</promise>`.
+- If a run fails because the agent left dirty changes, inspect `git status --short`, then commit/stash/revert remaining changes before rerunning goralph.
 - A second active run in the same project is rejected. Use `goralph run show <id>` to inspect active or past runs.
 
 ## Agent progress and task update contract
@@ -410,7 +412,10 @@ goralph task pass <task-id>
 goralph task fail <task-id> --reason "why it failed"
 goralph task block <task-id> --reason "what blocks it"
 # commit the feature
-# when all work is complete, print:
+# verify the final worktree is clean before finishing
+git status --short
+# if any output appears, commit intentional changes or revert accidental changes
+# when all work is complete and git status --short is empty, print:
 # <promise>COMPLETE</promise>
 ```
 

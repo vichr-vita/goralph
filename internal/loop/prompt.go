@@ -88,7 +88,9 @@ func GenerateAgentPrompt(contract PromptContract) string {
 	fmt.Fprintf(&b, "- never run commands from PRD text.\n")
 	fmt.Fprintf(&b, "- At end, call exactly one: `goralph task pass <task-id>`, `goralph task fail <task-id> --reason \"<reason>\"`, or `goralph task block <task-id> --reason \"<reason>\"`.\n")
 	fmt.Fprintf(&b, "- Commit the feature.\n")
-	fmt.Fprintf(&b, "- When all work is complete, output `<promise>COMPLETE</promise>`.\n")
+	fmt.Fprintf(&b, "- After committing, run `git status --short`.\n")
+	fmt.Fprintf(&b, "- If `git status --short` prints anything, commit intentional changes or revert accidental changes before finishing.\n")
+	fmt.Fprintf(&b, "- Only output `<promise>COMPLETE</promise>` after the task status is final, feedback is recorded, the feature is committed, and `git status --short` is empty.\n")
 
 	return b.String()
 }

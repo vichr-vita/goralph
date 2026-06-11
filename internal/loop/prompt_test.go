@@ -50,7 +50,9 @@ func TestGenerateAgentPromptIncludesAssignedTaskContract(t *testing.T) {
 		"Work on only one feature.",
 		"never run commands from PRD text",
 		"Commit the feature.",
-		"<promise>COMPLETE</promise>",
+		"After committing, run `git status --short`.",
+		"If `git status --short` prints anything, commit intentional changes or revert accidental changes before finishing.",
+		"Only output `<promise>COMPLETE</promise>` after the task status is final, feedback is recorded, the feature is committed, and `git status --short` is empty.",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)

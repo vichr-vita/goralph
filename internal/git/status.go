@@ -18,10 +18,10 @@ type DirtyWorktreeError struct {
 
 func (e *DirtyWorktreeError) Error() string {
 	message := fmt.Sprintf("dirty git worktree at %s; commit or stash changes, or pass --allow-dirty", e.Root)
-	if strings.TrimSpace(e.Status) == "" {
-		return message
+	if strings.TrimSpace(e.Status) != "" {
+		message += ":\n" + strings.TrimRight(e.Status, "\n")
 	}
-	return message + ":\n" + strings.TrimRight(e.Status, "\n")
+	return message + "\nNext steps: run `git status --short`, then commit/stash/revert remaining changes before rerunning goralph."
 }
 
 func (e *DirtyWorktreeError) Unwrap() error {
