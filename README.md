@@ -199,6 +199,10 @@ goralph prd export prd.json
 
 Use `--db <path>` for an explicit SQLite database. Without it, goralph uses `GO_RALPH_DB`, then `$XDG_DATA_HOME/goralph/ralph.db`, then `~/.local/share/goralph/ralph.db`.
 
+### Agent skill
+
+Reusable agent skills live in [`docs/skills/`](docs/skills/). The [`use-goralph-run` skill](docs/skills/use-goralph-run/SKILL.md) covers strict PRD JSON, feedback gates, `goralph run all`, stale-run handling, dirty-worktree recovery, and final PRD export verification.
+
 ## Command reference
 
 All commands accept global flags:
