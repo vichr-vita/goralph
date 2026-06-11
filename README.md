@@ -9,14 +9,14 @@
 
 ## Install or build
 
-Install version `v0.1.3` from GitHub:
+Install version `v0.1.4` from GitHub:
 
 ```sh
-go install github.com/vichr-vita/goralph@v0.1.3
+go install github.com/vichr-vita/goralph@v0.1.4
 goralph --help
 ```
 
-Remote `go install` needs a version suffix such as `@v0.1.3`.
+Remote `go install` needs a version suffix such as `@v0.1.4`.
 
 If `goralph` is not found, add your Go binary directory to `PATH`.
 
@@ -34,10 +34,10 @@ echo 'export PATH="$(go env GOPATH)/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-Update installed binary to `v0.1.3`:
+Update installed binary to `v0.1.4`:
 
 ```sh
-go install github.com/vichr-vita/goralph@v0.1.3
+go install github.com/vichr-vita/goralph@v0.1.4
 ```
 
 Uninstall:

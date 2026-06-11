@@ -15,9 +15,11 @@ func Open(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	database.SetMaxOpenConns(1)
-	if _, err := database.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		database.Close()
-		return nil, err
+	for _, pragma := range []string{"PRAGMA busy_timeout = 5000", "PRAGMA foreign_keys = ON"} {
+		if _, err := database.Exec(pragma); err != nil {
+			database.Close()
+			return nil, err
+		}
 	}
 	return database, nil
 }

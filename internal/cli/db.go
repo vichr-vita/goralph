@@ -107,7 +107,8 @@ func isProjectlessCommand(cmd *cobra.Command) bool {
 		return true
 	}
 	for current := cmd; current != nil; current = current.Parent() {
-		if current.Name() == "db" {
+		switch current.Name() {
+		case "completion", "db":
 			return true
 		}
 	}

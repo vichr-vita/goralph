@@ -409,6 +409,31 @@ func TestRootCommandErrorsWithoutGitRoot(t *testing.T) {
 	}
 }
 
+func TestCompletionCommandRunsWithoutGitRoot(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	workDir := filepath.Join(t.TempDir(), "not-a-repo")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("create work dir: %v", err)
+	}
+	chdir(t, workDir)
+
+	stdout := &bytes.Buffer{}
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", filepath.Join(t.TempDir(), "ralph.db"), "completion", "zsh"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute completion zsh: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "#compdef") {
+		t.Fatalf("completion output missing zsh compdef: %q", stdout.String())
+	}
+}
+
 func TestPRDValidateCommandValidatesFileWithoutGitRoot(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -2402,6 +2427,9 @@ func TestRunOneHelper(t *testing.T) {
 		t.Fatalf("open helper database: %v", err)
 	}
 	defer database.Close()
+	if _, err := database.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+		t.Fatalf("set helper busy timeout: %v", err)
+	}
 
 	if _, err := database.Exec("UPDATE task SET status = 'passed', updated_at = CURRENT_TIMESTAMP WHERE id = ?", taskID); err != nil {
 		t.Fatalf("helper update task: %v", err)
@@ -2425,6 +2453,9 @@ func TestRunAllHelper(t *testing.T) {
 		t.Fatalf("open helper database: %v", err)
 	}
 	defer database.Close()
+	if _, err := database.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+		t.Fatalf("set helper busy timeout: %v", err)
+	}
 
 	var taskID int64
 	if err := database.QueryRow("SELECT id FROM task WHERE status = 'pending' ORDER BY id LIMIT 1").Scan(&taskID); err != nil {
