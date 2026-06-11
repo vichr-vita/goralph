@@ -434,6 +434,35 @@ func TestCompletionCommandRunsWithoutGitRoot(t *testing.T) {
 	}
 }
 
+func TestShellCompletionRequestRunsWithoutGitRoot(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	workDir := filepath.Join(t.TempDir(), "not-a-repo")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("create work dir: %v", err)
+	}
+	chdir(t, workDir)
+
+	stdout := &bytes.Buffer{}
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", filepath.Join(t.TempDir(), "ralph.db"), "__complete", "fe"})
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute shell completion: %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "feedback\tManage project feedback commands") {
+		t.Fatalf("shell completion output = %q, want feedback command", out)
+	}
+	if !strings.Contains(out, ":4") {
+		t.Fatalf("shell completion output = %q, want no-file completion directive", out)
+	}
+}
+
 func TestPRDValidateCommandValidatesFileWithoutGitRoot(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
