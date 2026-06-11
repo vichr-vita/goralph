@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/pressly/goose/v3"
+
 	"github.com/vichr-vita/goralph/internal/db/sqlc"
 )
 
@@ -39,6 +41,38 @@ func TestOpenUsesModerncSQLiteAndGeneratedQueries(t *testing.T) {
 	}
 	if got != 1 {
 		t.Fatalf("ping = %d, want 1", got)
+	}
+}
+
+type recordingGooseLogger struct {
+	messages []string
+}
+
+func (l *recordingGooseLogger) Fatalf(format string, v ...any) {
+	l.messages = append(l.messages, format)
+}
+
+func (l *recordingGooseLogger) Printf(format string, v ...any) {
+	l.messages = append(l.messages, format)
+}
+
+func TestMigrateSuppressesGooseLoggerOutput(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "ralph.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+
+	logger := &recordingGooseLogger{}
+	goose.SetLogger(logger)
+	if err := Migrate(context.Background(), database); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	if err := Migrate(context.Background(), database); err != nil {
+		t.Fatalf("migrate current database: %v", err)
+	}
+	if len(logger.messages) != 0 {
+		t.Fatalf("goose logged %d messages, want none: %v", len(logger.messages), logger.messages)
 	}
 }
 

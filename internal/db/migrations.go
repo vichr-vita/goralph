@@ -22,6 +22,7 @@ func Migrate(ctx context.Context, database *sql.DB) error {
 	gooseMu.Lock()
 	defer gooseMu.Unlock()
 
+	goose.SetLogger(goose.NopLogger())
 	goose.SetBaseFS(embeddedMigrations)
 	defer goose.SetBaseFS(nil)
 
