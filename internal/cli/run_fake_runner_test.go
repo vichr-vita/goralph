@@ -16,6 +16,12 @@ import (
 	"github.com/vichr-vita/goralph/internal/runner"
 )
 
+type runnerFunc func(context.Context, runner.Request) (runner.Result, error)
+
+func (f runnerFunc) Run(ctx context.Context, req runner.Request) (runner.Result, error) {
+	return f(ctx, req)
+}
+
 type fakeAgentRunner struct {
 	command string
 	args    []string
@@ -25,6 +31,9 @@ type fakeAgentRunner struct {
 
 func (r fakeAgentRunner) Run(ctx context.Context, req runner.Request) (runner.Result, error) {
 	turn := int(atomic.AddInt32(r.turns, 1))
+	if strings.Contains(req.Prompt, "Ralph task selector agent prompt contract") {
+		return fakeSelectNextTaskResult(turn, req.Prompt)
+	}
 	startedAt := time.Now()
 	metadata := runner.Metadata{
 		RunnerName:    "fake",
@@ -54,6 +63,50 @@ func (r fakeAgentRunner) Run(ctx context.Context, req runner.Request) (runner.Re
 		_, _ = io.WriteString(req.Stderr, result.Stderr)
 	}
 	return result, err
+}
+
+func fakeSelectNextTaskResult(turn int, prompt string) (runner.Result, error) {
+	metadata := runner.Metadata{
+		RunnerName:    "fake",
+		RunnerVersion: "test-version",
+		RunnerModel:   "test-model",
+		SessionID:     "fake-selector-session-" + strconv.Itoa(turn),
+		PID:           424242,
+		Host:          "fake-host",
+		StartedAt:     time.Now(),
+		FinishedAt:    time.Now(),
+		ExitCode:      0,
+	}
+	taskID, hasTask, err := fakeSelectTaskIDFromPrompt(prompt)
+	if err != nil {
+		return runner.Result{Metadata: metadata}, err
+	}
+	if !hasTask {
+		return runner.Result{Metadata: metadata, Stdout: "<task_id>NONE</task_id>\n"}, nil
+	}
+	return runner.Result{Metadata: metadata, Stdout: fmt.Sprintf("<task_id>%d</task_id>\n", taskID)}, nil
+}
+
+func fakeSelectTaskIDFromPrompt(prompt string) (int64, bool, error) {
+	var taskID int64
+	for _, line := range strings.Split(prompt, "\n") {
+		line = strings.TrimSpace(line)
+		if value, ok := strings.CutPrefix(line, "- Task ID: "); ok {
+			id, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return 0, false, err
+			}
+			taskID = id
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "Status: "); ok {
+			if taskID > 0 && (value == "pending" || value == "failed") {
+				return taskID, true, nil
+			}
+			taskID = 0
+		}
+	}
+	return 0, false, nil
 }
 
 func installFakeAgentRunner(t *testing.T, run func(context.Context, runner.Request, int) (runner.Result, error)) *int32 {
@@ -183,8 +236,13 @@ func TestFakeRunnerRunOneExecutesExactlyOneTurn(t *testing.T) {
 		{"category":"runner","description":"second","steps":["two"],"passes":false}
 	]`)
 	turns := installFakeAgentRunner(t, func(_ context.Context, req runner.Request, _ int) (runner.Result, error) {
-		if !strings.Contains(req.Prompt, "Eligible tasks, highest priority first") {
-			t.Fatalf("prompt missing eligible task list:\n%s", req.Prompt)
+		for _, want := range []string{"Assigned task:", "Description: first"} {
+			if !strings.Contains(req.Prompt, want) {
+				t.Fatalf("implementation prompt missing %q:\n%s", want, req.Prompt)
+			}
+		}
+		if strings.Contains(req.Prompt, "Description: second") || strings.Contains(req.Prompt, "Eligible tasks, highest priority first") {
+			t.Fatalf("implementation prompt included extra task context:\n%s", req.Prompt)
 		}
 		fakePassNextPendingTask(t, dbPath)
 		return runner.Result{}, nil
@@ -197,11 +255,48 @@ func TestFakeRunnerRunOneExecutesExactlyOneTurn(t *testing.T) {
 	if !strings.Contains(stdout, "Status: succeeded") {
 		t.Fatalf("run output = %q, want succeeded", stdout)
 	}
-	if got := atomic.LoadInt32(turns); got != 1 {
-		t.Fatalf("fake runner turns = %d, want 1", got)
+	if got := atomic.LoadInt32(turns); got != 2 {
+		t.Fatalf("fake runner turns = %d, want 2", got)
 	}
 	assertRunCount(t, dbPath, 1)
 	assertTaskStatuses(t, dbPath, repoRoot, "passed", "pending")
+}
+
+func TestFakeRunnerRunOneSelectorPromptReceivesOnlyNonCompleteTasks(t *testing.T) {
+	dbPath, repoRoot := setupFakeRunnerProject(t, `[
+		{"category":"runner","description":"passed task","steps":["one"],"passes":true},
+		{"category":"runner","description":"pending task","steps":["two"],"passes":false},
+		{"category":"runner","description":"blocked task","steps":["three"],"passes":false}
+	]`)
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	setTaskStatus(t, dbPath, tasks[2].id, "blocked")
+
+	previous := newAgentRunner
+	var selectorPrompt string
+	newAgentRunner = func(string, []string) runner.Runner {
+		return runnerFunc(func(_ context.Context, req runner.Request) (runner.Result, error) {
+			if strings.Contains(req.Prompt, "Ralph task selector agent prompt contract") {
+				selectorPrompt = req.Prompt
+				return runner.Result{Metadata: runner.Metadata{RunnerName: "fake", ExitCode: 0}, Stdout: fmt.Sprintf("<task_id>%d</task_id>\n", tasks[1].id)}, nil
+			}
+			fakePassTask(t, dbPath, tasks[1].id)
+			return runner.Result{Metadata: runner.Metadata{RunnerName: "fake", ExitCode: 0}}, nil
+		})
+	}
+	t.Cleanup(func() { newAgentRunner = previous })
+
+	_, err := executeRunCommand(t, dbPath, "run", "--quiet", "one")
+	if err != nil {
+		t.Fatalf("execute run one: %v", err)
+	}
+	for _, want := range []string{"Description: pending task", "Description: blocked task", "Ralph already queried non-complete tasks deterministically", "Do not run goralph CLI commands or database queries to list tasks"} {
+		if !strings.Contains(selectorPrompt, want) {
+			t.Fatalf("selector prompt missing %q:\n%s", want, selectorPrompt)
+		}
+	}
+	if strings.Contains(selectorPrompt, "Description: passed task") {
+		t.Fatalf("selector prompt included passed task:\n%s", selectorPrompt)
+	}
 }
 
 func TestFakeRunnerRunOneTaskFlagForcesSpecifiedTask(t *testing.T) {
@@ -286,8 +381,8 @@ func TestFakeRunnerRunOneRecoversStaleSameHostOldHeartbeatWithForce(t *testing.T
 	if !strings.Contains(stdout, "Status: succeeded") {
 		t.Fatalf("run output = %q, want succeeded", stdout)
 	}
-	if got := atomic.LoadInt32(turns); got != 1 {
-		t.Fatalf("fake runner turns = %d, want 1", got)
+	if got := atomic.LoadInt32(turns); got != 2 {
+		t.Fatalf("fake runner turns = %d, want 2", got)
 	}
 	assertRunCount(t, dbPath, 2)
 	assertRunFailedWithExitError(t, dbPath, staleRunID, "stale active run recovered with --force: heartbeat older than 1h0m0s")
@@ -321,8 +416,8 @@ func TestFakeRunnerRunOneCrossHostStaleHeartbeatRequiresForce(t *testing.T) {
 	if !strings.Contains(stdout, "Status: succeeded") {
 		t.Fatalf("run output = %q, want succeeded", stdout)
 	}
-	if got := atomic.LoadInt32(turns); got != 1 {
-		t.Fatalf("fake runner turns = %d, want 1", got)
+	if got := atomic.LoadInt32(turns); got != 2 {
+		t.Fatalf("fake runner turns = %d, want 2", got)
 	}
 	assertRunCount(t, dbPath, 2)
 	assertRunFailedWithExitError(t, dbPath, staleRunID, "stale active run recovered with --force: cross-host heartbeat from other-host older than 1h0m0s")
@@ -345,34 +440,32 @@ func TestFakeRunnerRunAllStopsOnAllPassed(t *testing.T) {
 	if !strings.Contains(stdout, "All tasks passed") {
 		t.Fatalf("run all output = %q, want all passed", stdout)
 	}
-	if got := atomic.LoadInt32(turns); got != 2 {
-		t.Fatalf("fake runner turns = %d, want 2", got)
+	if got := atomic.LoadInt32(turns); got != 4 {
+		t.Fatalf("fake runner turns = %d, want 4", got)
 	}
 	assertRunCount(t, dbPath, 2)
 	assertTaskStatuses(t, dbPath, repoRoot, "passed", "passed")
 }
 
-func TestFakeRunnerRunAllStopsOnCompletePromise(t *testing.T) {
+func TestFakeRunnerRunAllRejectsEarlyCompletePromise(t *testing.T) {
 	dbPath, repoRoot := setupFakeRunnerProject(t, `[
 		{"category":"runner","description":"first remains","steps":["one"],"passes":false},
 		{"category":"runner","description":"second remains","steps":["two"],"passes":false}
 	]`)
 	turns := installFakeAgentRunner(t, func(_ context.Context, _ runner.Request, _ int) (runner.Result, error) {
+		fakePassNextPendingTask(t, dbPath)
 		return runner.Result{Stdout: "<promise>COMPLETE</promise>\n"}, nil
 	})
 
-	stdout, err := executeRunCommand(t, dbPath, "run", "--quiet", "all")
-	if err != nil {
-		t.Fatalf("execute run all complete promise: %v", err)
+	_, err := executeRunCommand(t, dbPath, "run", "--quiet", "all")
+	if err == nil || !strings.Contains(err.Error(), "agent declared completion before all tasks passed") {
+		t.Fatalf("run all early complete error = %v, want premature completion error", err)
 	}
-	if !strings.Contains(stdout, "Agent declared completion") {
-		t.Fatalf("run all output = %q, want completion", stdout)
-	}
-	if got := atomic.LoadInt32(turns); got != 1 {
-		t.Fatalf("fake runner turns = %d, want 1", got)
+	if got := atomic.LoadInt32(turns); got != 2 {
+		t.Fatalf("fake runner turns = %d, want 2", got)
 	}
 	assertRunCount(t, dbPath, 1)
-	assertTaskStatuses(t, dbPath, repoRoot, "pending", "pending")
+	assertTaskStatuses(t, dbPath, repoRoot, "passed", "pending")
 }
 
 func TestFakeRunnerRunAllStopsOnBlockedOrFailedByDefault(t *testing.T) {

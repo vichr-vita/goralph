@@ -32,6 +32,12 @@ FROM task
 WHERE project_id = ? AND status = ?
 ORDER BY id;
 
+-- name: ListNonCompleteTasksByProject :many
+SELECT id, project_id, category, description, status, progress_report, created_at, updated_at
+FROM task
+WHERE project_id = ? AND status <> 'passed'
+ORDER BY id;
+
 -- name: GetTaskByProjectAndID :one
 SELECT id, project_id, category, description, status, progress_report, created_at, updated_at
 FROM task

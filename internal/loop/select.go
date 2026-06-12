@@ -14,11 +14,20 @@ type TaskSelection struct {
 	HasTask bool
 }
 
+// SelectNonCompleteTasks returns unfinished tasks in deterministic priority order.
+func SelectNonCompleteTasks(ctx context.Context, queries *sqlc.Queries, projectID int64) ([]sqlc.Task, error) {
+	tasks, err := queries.ListNonCompleteTasksByProject(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list non-complete tasks: %w", err)
+	}
+	return tasks, nil
+}
+
 // SelectEligibleTasks returns agent-selectable tasks in priority order.
 // Pending tasks and failed retry tasks are eligible. Passed, blocked, and
 // in-progress tasks are not eligible for new selection.
 func SelectEligibleTasks(ctx context.Context, queries *sqlc.Queries, projectID int64) ([]sqlc.Task, error) {
-	tasks, err := queries.ListTasksByProject(ctx, projectID)
+	tasks, err := SelectNonCompleteTasks(ctx, queries, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list eligible tasks: %w", err)
 	}

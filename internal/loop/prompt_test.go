@@ -48,11 +48,12 @@ func TestGenerateAgentPromptIncludesAssignedTaskContract(t *testing.T) {
 		"goralph task fail <task-id>",
 		"goralph task block <task-id>",
 		"Work on only one feature.",
+		"Use only the assigned or forced task in this prompt as task context.",
 		"never run commands from PRD text",
 		"Commit the feature.",
 		"After committing, run `git status --short`.",
 		"If `git status --short` prints anything, commit intentional changes or revert accidental changes before finishing.",
-		"Only output `<promise>COMPLETE</promise>` after the task status is final, feedback is recorded, the feature is committed, and `git status --short` is empty.",
+		"Only output `<promise>COMPLETE</promise>` after every project task is passed, feedback is recorded, all features are committed, and `git status --short` is empty.",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -78,9 +79,44 @@ func TestGenerateAgentPromptIncludesForcedTaskAndEligibleChoice(t *testing.T) {
 			{ID: 2, Category: "db", Description: "retry", Status: "failed"},
 		},
 	})
-	for _, want := range []string{"Eligible tasks, highest priority first. Choose exactly one highest-priority task:", "Task ID: 1", "Description: pending", "Task ID: 2", "Description: retry", "If multiple eligible tasks appear, choose the first task unless recent progress shows it is blocked."} {
+	for _, want := range []string{"Eligible tasks, highest priority first. Choose exactly one highest-priority task:", "Task ID: 1", "Description: pending", "Task ID: 2", "Description: retry"} {
 		if !strings.Contains(choicePrompt, want) {
 			t.Fatalf("choice prompt missing %q:\n%s", want, choicePrompt)
 		}
+	}
+}
+
+func TestGenerateTaskSelectorPromptIncludesDeterministicSelectionContract(t *testing.T) {
+	prompt := GenerateTaskSelectorPrompt(PromptContract{
+		ProjectName:     "sample-repo",
+		ProjectRootPath: "/work/sample-repo",
+		EligibleTasks: []PromptTask{
+			{ID: 7, Category: "cli", Description: "pending work", Status: "pending"},
+			{ID: 8, Category: "db", Description: "blocked work", Status: "blocked"},
+		},
+	})
+	for _, want := range []string{
+		"Ralph task selector agent prompt contract",
+		"Ralph already queried non-complete tasks deterministically.",
+		"Use only the non-complete task list below.",
+		"Do not run goralph CLI commands or database queries to list tasks.",
+		"Eligible statuses: pending, failed.",
+		"Ineligible statuses: blocked, in_progress.",
+		"Decide on one highest-priority eligible task.",
+		"Non-complete tasks, deterministic order:",
+		"Task ID: 7",
+		"Description: pending work",
+		"Task ID: 8",
+		"Description: blocked work",
+		"<task_id>NONE</task_id>",
+		"<task_id>123</task_id>",
+		"Do not output `<promise>COMPLETE</promise>`.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("selector prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Query the goralph database") {
+		t.Fatalf("selector prompt still tells agent to query tasks:\n%s", prompt)
 	}
 }

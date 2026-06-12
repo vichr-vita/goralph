@@ -195,7 +195,14 @@ func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 					return err
 				}
 				if complete {
-					return writeRunMessage(cmd, "complete", "Agent declared completion", runs)
+					stop, err := inspectRunAllStop(cmd.Context(), settings.DBPath, project.ID, continueOnBlocked)
+					if err != nil {
+						return err
+					}
+					if stop.kind == runAllStopAllPassed {
+						return writeRunMessage(cmd, "complete", "Agent declared completion", runs)
+					}
+					return runFailureOutcome(fmt.Errorf("agent declared completion before all tasks passed"))
 				}
 				if run.TaskID == nil {
 					return nil
@@ -473,28 +480,32 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 		beforeStatuses[task.ID] = task.Status
 		runTaskID = sql.NullInt64{Int64: task.ID, Valid: true}
 	} else {
-		eligible, err := loop.SelectEligibleTasks(ctx, queries, project.ID)
+		nonComplete, err := loop.SelectNonCompleteTasks(ctx, queries, project.ID)
 		if err != nil {
 			return runOutput{}, false, false, err
 		}
-		eligible = filterSeenTasks(eligible, seen)
+		selectorTasks := filterSeenTasks(nonComplete, seen)
 		if pendingOnly {
-			eligible = filterPendingTasks(eligible)
+			selectorTasks = filterPendingTasks(selectorTasks)
 		}
-		if len(eligible) == 0 {
+		if !hasSelectableTask(selectorTasks, pendingOnly) {
 			return runOutput{}, false, false, nil
 		}
 
-		promptTasks := make([]loop.PromptTask, 0, len(eligible))
-		for _, task := range eligible {
-			promptTask, err := promptTaskFromRow(ctx, queries, task)
-			if err != nil {
-				return runOutput{}, true, false, err
-			}
-			promptTasks = append(promptTasks, promptTask)
-			beforeStatuses[task.ID] = task.Status
+		selected, hasTask, err := selectTaskWithAgent(ctx, project, runnerCommand, runnerArgs, quiet, selectorTasks, pendingOnly)
+		if err != nil {
+			return runOutput{}, true, false, err
 		}
-		promptContract.EligibleTasks = promptTasks
+		if !hasTask {
+			return runOutput{}, false, false, nil
+		}
+		promptTask, err := promptTaskFromRow(ctx, queries, selected)
+		if err != nil {
+			return runOutput{}, true, false, err
+		}
+		promptContract.AssignedTask = &promptTask
+		beforeStatuses[selected.ID] = selected.Status
+		runTaskID = sql.NullInt64{Int64: selected.ID, Valid: true}
 	}
 	prompt := loop.GenerateAgentPrompt(promptContract)
 
@@ -517,7 +528,11 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 		return runOutputFromRow(started), true, false, err
 	}
 	if runTaskID.Valid {
-		if err := events.Emit(runEvent{Type: "task_selected", RunID: started.ID, TaskID: runTaskID.Int64, Mode: "forced"}); err != nil {
+		mode := "selected"
+		if forcedTaskID != nil {
+			mode = "forced"
+		}
+		if err := events.Emit(runEvent{Type: "task_selected", RunID: started.ID, TaskID: runTaskID.Int64, Mode: mode}); err != nil {
 			return runOutputFromRow(started), true, false, err
 		}
 	}
@@ -567,31 +582,22 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 		metadata.Host = started.Host
 	}
 	complete := hasCompletePromise(result.Stdout) || hasCompletePromise(result.Stderr)
-	selectedTaskID, verifyErr := int64(0), error(nil)
-	if !complete {
-		selectedTaskID, verifyErr = verifyAgentTaskUpdate(ctx, queries, project.ID, started.ID, beforeStatuses)
-	}
+	selectedTaskID, verifyErr := verifyAgentTaskUpdate(ctx, queries, project.ID, started.ID, beforeStatuses)
 	if verifyErr != nil {
 		if runErr == nil {
 			runErr = verifyErr
 		}
 	} else if selectedTaskID != 0 {
-		started, err = queries.SetRunTaskID(ctx, sqlc.SetRunTaskIDParams{
-			TaskID:    sql.NullInt64{Int64: selectedTaskID, Valid: true},
-			ProjectID: project.ID,
-			ID:        started.ID,
-		})
+		if seen != nil {
+			seen[selectedTaskID] = struct{}{}
+		}
+	}
+	if runErr == nil && complete {
+		stop, err := inspectRunAllStop(ctx, dbPath, project.ID, true)
 		if err != nil {
-			if runErr == nil {
-				runErr = fmt.Errorf("set run %d task: %w", started.ID, err)
-			}
-		} else {
-			if err := events.Emit(runEvent{Type: "task_selected", RunID: started.ID, TaskID: selectedTaskID, Mode: "selected"}); err != nil && runErr == nil {
-				runErr = err
-			}
-			if seen != nil {
-				seen[selectedTaskID] = struct{}{}
-			}
+			runErr = err
+		} else if stop.kind != runAllStopAllPassed {
+			runErr = fmt.Errorf("agent declared completion before all tasks passed")
 		}
 	}
 	if runErr == nil && verifyCleanAfter {
@@ -696,6 +702,65 @@ func inspectRunAllStop(ctx context.Context, dbPath string, projectID int64, cont
 	return runAllStop{kind: runAllStopNone}, nil
 }
 
+func selectTaskWithAgent(ctx context.Context, project sqlc.Project, runnerCommand string, runnerArgs []string, quiet bool, nonComplete []sqlc.Task, pendingOnly bool) (sqlc.Task, bool, error) {
+	prompt := loop.GenerateTaskSelectorPrompt(loop.PromptContract{
+		ProjectName:     project.Name,
+		ProjectRootPath: project.RootPath,
+		EligibleTasks:   promptTasksFromRows(nonComplete),
+	})
+	env := []string{"GO_RALPH_AGENT_ROLE=selector"}
+	if taskID, ok := firstSelectableTaskID(nonComplete, pendingOnly); ok {
+		env = append(env, fmt.Sprintf("GO_RALPH_SELECTOR_TASK_ID=%d", taskID))
+	}
+	result, err := newAgentRunner(runnerCommand, runnerArgs).Run(ctx, runner.Request{
+		Prompt:  prompt,
+		WorkDir: project.RootPath,
+		Env:     env,
+		Quiet:   quiet,
+		Stdout:  io.Discard,
+		Stderr:  io.Discard,
+	})
+	if err != nil {
+		return sqlc.Task{}, false, fmt.Errorf("select task with agent: %w", err)
+	}
+	selectedID, hasTask, err := parseSelectedTaskID(result.Stdout + "\n" + result.Stderr)
+	if err != nil {
+		return sqlc.Task{}, false, fmt.Errorf("select task with agent: %w", err)
+	}
+	if !hasTask {
+		return sqlc.Task{}, false, nil
+	}
+	for _, task := range nonComplete {
+		if task.ID == selectedID && isSelectableTask(task, pendingOnly) {
+			return task, true, nil
+		}
+	}
+	return sqlc.Task{}, false, fmt.Errorf("selector chose ineligible task %d", selectedID)
+}
+
+func parseSelectedTaskID(output string) (int64, bool, error) {
+	const openTag = "<task_id>"
+	const closeTag = "</task_id>"
+	start := strings.Index(output, openTag)
+	if start < 0 {
+		return 0, false, errors.New("missing <task_id> selection")
+	}
+	start += len(openTag)
+	end := strings.Index(output[start:], closeTag)
+	if end < 0 {
+		return 0, false, errors.New("missing </task_id> selection")
+	}
+	value := strings.TrimSpace(output[start : start+end])
+	if strings.EqualFold(value, "NONE") {
+		return 0, false, nil
+	}
+	id, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false, fmt.Errorf("invalid selected task id %q", value)
+	}
+	return id, true, nil
+}
+
 func filterSeenTasks(tasks []sqlc.Task, seen map[int64]struct{}) []sqlc.Task {
 	if len(seen) == 0 {
 		return tasks
@@ -717,6 +782,41 @@ func filterPendingTasks(tasks []sqlc.Task) []sqlc.Task {
 		}
 	}
 	return filtered
+}
+
+func hasSelectableTask(tasks []sqlc.Task, pendingOnly bool) bool {
+	_, ok := firstSelectableTaskID(tasks, pendingOnly)
+	return ok
+}
+
+func firstSelectableTaskID(tasks []sqlc.Task, pendingOnly bool) (int64, bool) {
+	for _, task := range tasks {
+		if isSelectableTask(task, pendingOnly) {
+			return task.ID, true
+		}
+	}
+	return 0, false
+}
+
+func isSelectableTask(task sqlc.Task, pendingOnly bool) bool {
+	if pendingOnly {
+		return task.Status == string(db.TaskStatusPending)
+	}
+	return task.Status == string(db.TaskStatusPending) || task.Status == string(db.TaskStatusFailed)
+}
+
+func promptTasksFromRows(tasks []sqlc.Task) []loop.PromptTask {
+	out := make([]loop.PromptTask, 0, len(tasks))
+	for _, task := range tasks {
+		out = append(out, loop.PromptTask{
+			ID:             task.ID,
+			Category:       task.Category,
+			Description:    task.Description,
+			Status:         task.Status,
+			ProgressReport: task.ProgressReport,
+		})
+	}
+	return out
 }
 
 func hasCompletePromise(output string) bool {

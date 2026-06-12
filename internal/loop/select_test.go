@@ -47,6 +47,32 @@ func TestSelectEligibleTaskTreatsFailedAsEligibleRetry(t *testing.T) {
 	}
 }
 
+func TestSelectNonCompleteTasksExcludesPassedTasks(t *testing.T) {
+	ctx := context.Background()
+	queries := newTestQueries(t, ctx)
+	projectID := createTestProject(t, ctx, queries)
+
+	createTestTask(t, ctx, queries, projectID, "passed", db.TaskStatusPassed)
+	pending := createTestTask(t, ctx, queries, projectID, "pending", db.TaskStatusPending)
+	blocked := createTestTask(t, ctx, queries, projectID, "blocked", db.TaskStatusBlocked)
+	inProgress := createTestTask(t, ctx, queries, projectID, "in progress", db.TaskStatusInProgress)
+	failed := createTestTask(t, ctx, queries, projectID, "failed", db.TaskStatusFailed)
+
+	tasks, err := SelectNonCompleteTasks(ctx, queries, projectID)
+	if err != nil {
+		t.Fatalf("select non-complete tasks: %v", err)
+	}
+	wantIDs := []int64{pending.ID, blocked.ID, inProgress.ID, failed.ID}
+	if len(tasks) != len(wantIDs) {
+		t.Fatalf("non-complete task count = %d, want %d; tasks=%+v", len(tasks), len(wantIDs), tasks)
+	}
+	for index, wantID := range wantIDs {
+		if tasks[index].ID != wantID {
+			t.Fatalf("non-complete task %d ID = %d, want %d; tasks=%+v", index, tasks[index].ID, wantID, tasks)
+		}
+	}
+}
+
 func TestSelectEligibleTaskReportsNoEligibleTasks(t *testing.T) {
 	ctx := context.Background()
 	queries := newTestQueries(t, ctx)

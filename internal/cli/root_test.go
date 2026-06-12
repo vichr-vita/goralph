@@ -1231,7 +1231,7 @@ func TestRunOnePromptIncludesProjectFeedbackCommands(t *testing.T) {
 		t.Fatalf("execute feedback set: %v", err)
 	}
 
-	runnerScript := "#!/bin/sh\nfor last do :; done\nprintf '%s' \"$last\" > " + strconv.Quote(promptPath) + "\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	runnerScript := "#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nfor last do :; done\nprintf '%s' \"$last\" > " + strconv.Quote(promptPath) + "\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
@@ -1291,7 +1291,7 @@ func TestRunOneCreatesAndFinishesRunRecord(t *testing.T) {
 	}
 	taskID := tasks[0].id
 	seedTaskProgress(t, dbPath, taskID, "half done", []string{"latest note"})
-	runnerScript := "#!/bin/sh\nfor last do :; done\nprintf x >> " + strconv.Quote(countPath) + "\nprintf '%s' \"$last\" > " + strconv.Quote(promptPath) + "\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(taskID, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	runnerScript := "#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nfor last do :; done\nprintf x >> " + strconv.Quote(countPath) + "\nprintf '%s' \"$last\" > " + strconv.Quote(promptPath) + "\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(taskID, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
@@ -1314,9 +1314,14 @@ func TestRunOneCreatesAndFinishesRunRecord(t *testing.T) {
 		t.Fatalf("read prompt: %v", err)
 	}
 	prompt := string(promptBytes)
-	for _, want := range []string{"Ralph loop agent prompt contract", "Name: sample-repo", "Root path: " + repoRoot, "Eligible tasks, highest priority first. Choose exactly one highest-priority task:", "Description: track me", "1. one", "Description: leave me pending", "Progress report: half done", "latest note", "go test ./...", "goralph task start <task-id>", "goralph progress add --task <task-id>", "goralph task pass <task-id>", "goralph task fail <task-id>", "goralph task block <task-id>", "Work on only one feature.", "If multiple eligible tasks appear, choose the first task unless recent progress shows it is blocked.", "Commit the feature.", "<promise>COMPLETE</promise>"} {
+	for _, want := range []string{"Ralph implementation agent prompt contract", "Name: sample-repo", "Root path: " + repoRoot, "Assigned task:", "Description: track me", "1. one", "Progress report: half done", "latest note", "go test ./...", "goralph task start <task-id>", "goralph progress add --task <task-id>", "goralph task pass <task-id>", "goralph task fail <task-id>", "goralph task block <task-id>", "Work on only one feature.", "Use only the assigned or forced task in this prompt as task context.", "Commit the feature.", "<promise>COMPLETE</promise>"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unwanted := range []string{"Eligible tasks, highest priority first", "Description: leave me pending"} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("implementation prompt included %q:\n%s", unwanted, prompt)
 		}
 	}
 
@@ -1392,7 +1397,7 @@ func TestRunOneTaskFlagForcesSpecifiedTask(t *testing.T) {
 		t.Fatalf("task count = %d, want 2", len(tasks))
 	}
 	forcedTaskID := tasks[1].id
-	runnerScript := "#!/bin/sh\nfor last do :; done\nprintf '%s' \"$last\" > " + strconv.Quote(promptPath) + "\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(forcedTaskID, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	runnerScript := "#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nfor last do :; done\nprintf '%s' \"$last\" > " + strconv.Quote(promptPath) + "\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(forcedTaskID, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
@@ -1471,7 +1476,7 @@ func TestRunOneTaskFlagRejectsUnknownOrOtherProjectTask(t *testing.T) {
 	}
 
 	runnerPath := filepath.Join(tempDir, "should-not-run.sh")
-	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nexit 99\n"), 0o700); err != nil {
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nexit 99\n"), 0o700); err != nil {
 		t.Fatalf("write runner: %v", err)
 	}
 	configPath := filepath.Join(tempDir, "config.yaml")
@@ -1524,7 +1529,7 @@ func TestRunAllTaskFlagIsRejected(t *testing.T) {
 	markerPath := filepath.Join(tempDir, "runner-ran.txt")
 	runnerPath := filepath.Join(tempDir, "should-not-run.sh")
 	configPath := filepath.Join(tempDir, "config.yaml")
-	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nprintf ran > "+strconv.Quote(markerPath)+"\nexit 99\n"), 0o700); err != nil {
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nprintf ran > "+strconv.Quote(markerPath)+"\nexit 99\n"), 0o700); err != nil {
 		t.Fatalf("write runner: %v", err)
 	}
 	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
@@ -1589,7 +1594,7 @@ func TestRunOneRejectsExistingActiveRun(t *testing.T) {
 	markerPath := filepath.Join(tempDir, "runner-ran.txt")
 	runnerPath := filepath.Join(tempDir, "should-not-run.sh")
 	configPath := filepath.Join(tempDir, "config.yaml")
-	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nprintf ran > "+strconv.Quote(markerPath)+"\nexit 0\n"), 0o700); err != nil {
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nprintf ran > "+strconv.Quote(markerPath)+"\nexit 0\n"), 0o700); err != nil {
 		t.Fatalf("write runner: %v", err)
 	}
 	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
@@ -1637,7 +1642,7 @@ func TestRunAllRejectsExistingActiveRun(t *testing.T) {
 	markerPath := filepath.Join(tempDir, "runner-ran.txt")
 	runnerPath := filepath.Join(tempDir, "should-not-run.sh")
 	configPath := filepath.Join(tempDir, "config.yaml")
-	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nprintf ran > "+strconv.Quote(markerPath)+"\nexit 0\n"), 0o700); err != nil {
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nprintf ran > "+strconv.Quote(markerPath)+"\nexit 0\n"), 0o700); err != nil {
 		t.Fatalf("write runner: %v", err)
 	}
 	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
@@ -1696,7 +1701,7 @@ func TestRunOneRecoversStaleSameHostDeadPIDWithForce(t *testing.T) {
 	host, _ := os.Hostname()
 	deadPID := deadPIDForTest(t)
 	staleRunID := seedActiveRunWithMetadata(t, dbPath, repoRoot, tasks[0].id, deadPID, host, time.Now().UTC().Format(time.RFC3339))
-	runnerScript := "#!/bin/sh\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	runnerScript := "#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
@@ -1764,7 +1769,7 @@ func TestRunOneRequiresForceForCrossHostStaleHeartbeat(t *testing.T) {
 	markerPath := filepath.Join(tempDir, "runner-ran.txt")
 	runnerPath := filepath.Join(tempDir, "should-not-run.sh")
 	configPath := filepath.Join(tempDir, "config.yaml")
-	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nprintf ran > "+strconv.Quote(markerPath)+"\nexit 0\n"), 0o700); err != nil {
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nprintf ran > "+strconv.Quote(markerPath)+"\nexit 0\n"), 0o700); err != nil {
 		t.Fatalf("write runner: %v", err)
 	}
 	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
@@ -1821,7 +1826,7 @@ func TestRunOneJSONEmitsNDJSONEvents(t *testing.T) {
 		t.Fatalf("execute prd import: %v", err)
 	}
 	tasks := fetchImportedTasks(t, dbPath, repoRoot)
-	runnerScript := "#!/bin/sh\nprintf 'runner-human-output\\n'\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	runnerScript := "#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nprintf 'runner-human-output\\n'\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
@@ -1973,7 +1978,7 @@ func TestRunOneRequiresCleanWorktreeUnlessAllowed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repoRoot, "dirty.txt"), []byte("dirty\n"), 0o600); err != nil {
 		t.Fatalf("write dirty marker: %v", err)
 	}
-	runnerScript := "#!/bin/sh\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	runnerScript := "#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
@@ -2031,7 +2036,7 @@ func TestRunOneAcceptsCleanCommittedPostRunState(t *testing.T) {
 		t.Fatalf("task count = %d, want 1", len(tasks))
 	}
 	committedPath := filepath.Join(repoRoot, "committed-after-run.txt")
-	runnerScript := "#!/bin/sh\nset -e\nprintf committed > " + strconv.Quote(committedPath) + "\ngit -C " + strconv.Quote(repoRoot) + " add " + strconv.Quote(committedPath) + "\ngit -C " + strconv.Quote(repoRoot) + " -c user.name='Goralph Test' -c user.email='goralph@example.invalid' commit --quiet -m 'agent clean commit'\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	runnerScript := "#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nset -e\nprintf committed > " + strconv.Quote(committedPath) + "\ngit -C " + strconv.Quote(repoRoot) + " add " + strconv.Quote(committedPath) + "\ngit -C " + strconv.Quote(repoRoot) + " -c user.name='Goralph Test' -c user.email='goralph@example.invalid' commit --quiet -m 'agent clean commit'\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
@@ -2079,7 +2084,7 @@ func TestRunOneFailsWhenAgentLeavesDirtyWorktree(t *testing.T) {
 	if len(tasks) != 1 {
 		t.Fatalf("task count = %d, want 1", len(tasks))
 	}
-	runnerScript := "#!/bin/sh\nprintf dirty > " + strconv.Quote(filepath.Join(repoRoot, "dirty-after-run.txt")) + "\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	runnerScript := "#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nprintf dirty > " + strconv.Quote(filepath.Join(repoRoot, "dirty-after-run.txt")) + "\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
@@ -2124,7 +2129,7 @@ func TestRunAllRequiresCleanWorktree(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nexit 99\n"), 0o700); err != nil {
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nexit 99\n"), 0o700); err != nil {
 		t.Fatalf("write runner: %v", err)
 	}
 	prdPath := writePRDFile(t, `[{"category":"runner","description":"dirty guarded","steps":["one"],"passes":false}]`)
@@ -2175,7 +2180,7 @@ func TestRunAllRechecksCleanWorktreeBeforeEachTurn(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute prd import: %v", err)
 	}
-	runnerScript := "#!/bin/sh\nprintf x >> " + strconv.Quote(countPath) + "\nprintf dirty > " + strconv.Quote(filepath.Join(repoRoot, "dirty-after-first.txt")) + "\nGO_RALPH_TEST_HELPER=run_all_progress_pending GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunAllHelper$' >/dev/null\n"
+	runnerScript := "#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nprintf x >> " + strconv.Quote(countPath) + "\nprintf dirty > " + strconv.Quote(filepath.Join(repoRoot, "dirty-after-first.txt")) + "\nGO_RALPH_TEST_HELPER=run_all_progress_pending GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunAllHelper$' >/dev/null\n"
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
@@ -2226,7 +2231,7 @@ func TestRunAllPassesPendingTasksUntilAllPassed(t *testing.T) {
 		t.Fatalf("task count = %d, want 2", got)
 	}
 
-	runnerScript := "#!/bin/sh\nprintf x >> " + strconv.Quote(countPath) + "\nGO_RALPH_TEST_HELPER=run_all_pass_pending GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunAllHelper$' >/dev/null\n"
+	runnerScript := "#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nprintf x >> " + strconv.Quote(countPath) + "\nGO_RALPH_TEST_HELPER=run_all_pass_pending GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunAllHelper$' >/dev/null\n"
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
@@ -2268,7 +2273,7 @@ func TestRunAllPassesPendingTasksUntilAllPassed(t *testing.T) {
 	}
 }
 
-func TestRunAllStopsOnCompletePromise(t *testing.T) {
+func TestRunAllRejectsEarlyCompletePromise(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
 	isolateDatabaseEnv(t)
@@ -2294,7 +2299,7 @@ func TestRunAllStopsOnCompletePromise(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute prd import: %v", err)
 	}
-	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nprintf 'prelude\\n'\nprintf '<promise>COMPLETE</promise>\\n' >&2\n"), 0o700); err != nil {
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nprintf 'prelude\\n'\nprintf '<promise>COMPLETE</promise>\\n' >&2\n"), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
 	viper.Reset()
@@ -2304,11 +2309,8 @@ func TestRunAllStopsOnCompletePromise(t *testing.T) {
 	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "all"})
 	cmd.SetOut(stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("execute run all complete promise: %v", err)
-	}
-	if !strings.Contains(stdout.String(), "Agent declared completion") {
-		t.Fatalf("run all output = %q, want completion report", stdout.String())
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "run 1 completed without updating an eligible task") {
+		t.Fatalf("run all early complete error = %v, want task update failure", err)
 	}
 	database, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -2319,8 +2321,15 @@ func TestRunAllStopsOnCompletePromise(t *testing.T) {
 	if err := database.QueryRow("SELECT COUNT(*) FROM run WHERE status = 'succeeded'").Scan(&runs); err != nil {
 		t.Fatalf("count runs: %v", err)
 	}
-	if runs != 1 {
-		t.Fatalf("runs = %d, want 1", runs)
+	if runs != 0 {
+		t.Fatalf("succeeded runs = %d, want 0", runs)
+	}
+	var failed int
+	if err := database.QueryRow("SELECT COUNT(*) FROM run WHERE status = 'failed'").Scan(&failed); err != nil {
+		t.Fatalf("count failed runs: %v", err)
+	}
+	if failed != 1 {
+		t.Fatalf("failed runs = %d, want 1", failed)
 	}
 	var pending int
 	if err := database.QueryRow("SELECT COUNT(*) FROM task WHERE status = 'pending'").Scan(&pending); err != nil {
@@ -2367,7 +2376,7 @@ func TestRunAllBlockedDefaultAndContinueOnBlocked(t *testing.T) {
 		t.Fatalf("block task: %v", err)
 	}
 	database.Close()
-	runnerScript := "#!/bin/sh\nprintf x >> " + strconv.Quote(countPath) + "\nGO_RALPH_TEST_HELPER=run_all_pass_pending GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunAllHelper$' >/dev/null\n"
+	runnerScript := "#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nprintf x >> " + strconv.Quote(countPath) + "\nGO_RALPH_TEST_HELPER=run_all_pass_pending GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunAllHelper$' >/dev/null\n"
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
@@ -2421,7 +2430,7 @@ func TestRunAllStopsAtMaxTurns(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute prd import: %v", err)
 	}
-	runnerScript := "#!/bin/sh\nprintf x >> " + strconv.Quote(countPath) + "\nGO_RALPH_TEST_HELPER=run_all_progress_pending GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunAllHelper$' >/dev/null\n"
+	runnerScript := "#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nprintf x >> " + strconv.Quote(countPath) + "\nGO_RALPH_TEST_HELPER=run_all_progress_pending GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunAllHelper$' >/dev/null\n"
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
@@ -2647,7 +2656,7 @@ func TestRunOpenAndExportUsePiSessionMetadata(t *testing.T) {
 
 	argsPath := filepath.Join(tempDir, "args.txt")
 	runnerPath := filepath.Join(tempDir, "fake-pi.sh")
-	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \""+argsPath+"\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nprintf '%s\\n' \"$@\" > \""+argsPath+"\"\n"), 0o700); err != nil {
 		t.Fatalf("write fake runner: %v", err)
 	}
 	configPath := filepath.Join(tempDir, "config.yaml")

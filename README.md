@@ -257,8 +257,8 @@ Run commands accept persistent run flags:
 
 Commands:
 
-- `goralph run one [--task <id>]` runs one agent turn. Without `--task`, goralph selects one eligible task. With `--task`, it targets that exact task.
-- `goralph run all [--continue-on-blocked] [--max-turns <n>]` keeps running eligible turns. It does not support `--task`. `--continue-on-blocked` keeps running pending tasks when blocked or failed tasks remain. `--max-turns 0` means unlimited.
+- `goralph run one [--task <id>]` runs one iteration. Without `--task`, goralph queries non-complete tasks deterministically and passes that list to a selector agent, then an implementation agent receives only the selected task. With `--task`, it targets that exact task.
+- `goralph run all [--continue-on-blocked] [--max-turns <n>]` keeps running eligible iterations. It does not support `--task`. `--continue-on-blocked` keeps running pending tasks when blocked or failed tasks remain. `--max-turns 0` means unlimited.
 - `goralph run list` lists stored runs for the current project.
 - `goralph run show <id>` shows run metadata and progress.
 - `goralph run open <id>` opens the stored Pi session via `pi --session <session-ref>`.
@@ -374,35 +374,35 @@ Export behavior:
 
 ## Run one vs run all
 
-`goralph run one` runs one agent turn.
+`goralph run one` runs one iteration.
 
-- By default it selects from eligible tasks.
+- By default the iteration uses two agents: goralph queries non-complete tasks deterministically, a selector agent chooses one eligible task from that supplied list, then an implementation agent receives only that selected task in its prompt.
 - Eligible tasks are `pending` and `failed`.
 - `passed`, `blocked`, and `in_progress` tasks are not selected.
 - Use `goralph run one --task <id>` to force one specific task.
 - If no eligible task exists, output reports `No eligible task`.
 
-`goralph run all` loops agent turns.
+`goralph run all` loops iterations.
 
-- It selects eligible tasks automatically; `--task` is not supported.
+- It selects eligible tasks automatically through the selector agent; `--task` is not supported.
 - It stops when all tasks are passed.
 - It stops with an error when blocked or failed tasks remain by default.
 - Use `--continue-on-blocked` to keep running pending tasks when blocked or failed tasks exist.
 - Use `--max-turns <n>` to cap turns; `0` means unlimited.
-- It stops when the agent prints `<promise>COMPLETE</promise>`.
+- It stops when an agent prints `<promise>COMPLETE</promise>` only if every task is passed. A premature completion promise fails the run.
 
 Run safety:
 
 - Runs require a clean Git worktree before each agent turn.
 - Use `--allow-dirty` to bypass the pre-run dirty-worktree guard.
 - After an agent turn, goralph expects a clean committed state unless dirty runs are allowed.
-- Generated agent prompts require `git status --short` after commit and before `<promise>COMPLETE</promise>`.
+- Generated implementation prompts require `git status --short` after commit and allow `<promise>COMPLETE</promise>` only after every project task is passed.
 - If a run fails because the agent left dirty changes, inspect `git status --short`, then commit/stash/revert remaining changes before rerunning goralph.
 - A second active run in the same project is rejected. Use `goralph run show <id>` to inspect active or past runs.
 
 ## Agent progress and task update contract
 
-The generated agent prompt gives the agent project context, task context, recent progress, and feedback command names. The agent must work one feature only.
+Each default iteration has a selector prompt and an implementation prompt. The selector prompt gives project context plus the deterministic non-complete task list and forbids extra task-list CLI/database queries. The implementation prompt gives project context, exactly one selected task, recent progress for that task, and feedback command names. The implementation agent must work one feature only.
 
 For each selected task, the agent contract is:
 
@@ -419,7 +419,7 @@ goralph task block <task-id> --reason "what blocks it"
 # verify the final worktree is clean before finishing
 git status --short
 # if any output appears, commit intentional changes or revert accidental changes
-# when all work is complete and git status --short is empty, print:
+# only when every project task is passed and git status --short is empty, print:
 # <promise>COMPLETE</promise>
 ```
 

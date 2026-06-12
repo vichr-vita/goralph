@@ -540,6 +540,45 @@ func (q *Queries) ListLatestProgressByTask(ctx context.Context, arg ListLatestPr
 	return items, nil
 }
 
+const listNonCompleteTasksByProject = `-- name: ListNonCompleteTasksByProject :many
+SELECT id, project_id, category, description, status, progress_report, created_at, updated_at
+FROM task
+WHERE project_id = ? AND status <> 'passed'
+ORDER BY id
+`
+
+func (q *Queries) ListNonCompleteTasksByProject(ctx context.Context, projectID int64) ([]Task, error) {
+	rows, err := q.db.QueryContext(ctx, listNonCompleteTasksByProject, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Task
+	for rows.Next() {
+		var i Task
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Category,
+			&i.Description,
+			&i.Status,
+			&i.ProgressReport,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProgressByProject = `-- name: ListProgressByProject :many
 SELECT id, project_id, task_id, run_id, summary, created_at, updated_at
 FROM progress
