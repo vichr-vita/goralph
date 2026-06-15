@@ -106,6 +106,45 @@ func TestLoadReadsFlatRunnerCommandAndArgs(t *testing.T) {
 	}
 }
 
+func TestLoadReadsPromptTemplatePath(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	want := filepath.Join(t.TempDir(), "prompt.tmpl")
+	writeFile(t, configPath, "prompt:\n  template: "+want+"\n")
+
+	settings, err := Load(configPath, "")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if settings.PromptTemplatePath != want {
+		t.Fatalf("prompt template path = %q, want %q", settings.PromptTemplatePath, want)
+	}
+	if got := viper.GetString(promptTemplateKey); got != want {
+		t.Fatalf("viper prompt template = %q, want %q", got, want)
+	}
+}
+
+func TestLoadReadsFlatPromptTemplatePath(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	want := filepath.Join(t.TempDir(), "prompt.tmpl")
+	writeFile(t, configPath, "prompt_template: "+want+"\n")
+
+	settings, err := Load(configPath, "")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if settings.PromptTemplatePath != want {
+		t.Fatalf("prompt template path = %q, want %q", settings.PromptTemplatePath, want)
+	}
+}
+
 func TestLoadUsesUserConfigDatabasePath(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)

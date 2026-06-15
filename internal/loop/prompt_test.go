@@ -1,12 +1,13 @@
 package loop
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
 
 func TestGenerateAgentPromptIncludesAssignedTaskContract(t *testing.T) {
-	prompt := GenerateAgentPrompt(PromptContract{
+	prompt, err := GenerateAgentPrompt(PromptContract{
 		ProjectName:     "sample-repo",
 		ProjectRootPath: "/work/sample-repo",
 		AssignedTask: &PromptTask{
@@ -20,6 +21,9 @@ func TestGenerateAgentPromptIncludesAssignedTaskContract(t *testing.T) {
 		},
 		FeedbackCommands: []string{"go test ./...", "gofmt -w ."},
 	})
+	if err != nil {
+		t.Fatalf("GenerateAgentPrompt error: %v", err)
+	}
 
 	for _, want := range []string{
 		"Project:",
@@ -62,16 +66,19 @@ func TestGenerateAgentPromptIncludesAssignedTaskContract(t *testing.T) {
 }
 
 func TestGenerateAgentPromptIncludesForcedTaskAndEligibleChoice(t *testing.T) {
-	forcedPrompt := GenerateAgentPrompt(PromptContract{
+	forcedPrompt, err := GenerateAgentPrompt(PromptContract{
 		ProjectName:     "sample-repo",
 		ProjectRootPath: "/work/sample-repo",
 		ForcedTask:      &PromptTask{ID: 3, Category: "cli", Description: "forced", Status: "failed"},
 	})
+	if err != nil {
+		t.Fatalf("GenerateAgentPrompt forced error: %v", err)
+	}
 	if !strings.Contains(forcedPrompt, "Forced task from --task:") || !strings.Contains(forcedPrompt, "Task ID: 3") {
 		t.Fatalf("forced prompt = %s", forcedPrompt)
 	}
 
-	choicePrompt := GenerateAgentPrompt(PromptContract{
+	choicePrompt, err := GenerateAgentPrompt(PromptContract{
 		ProjectName:     "sample-repo",
 		ProjectRootPath: "/work/sample-repo",
 		EligibleTasks: []PromptTask{
@@ -79,6 +86,9 @@ func TestGenerateAgentPromptIncludesForcedTaskAndEligibleChoice(t *testing.T) {
 			{ID: 2, Category: "db", Description: "retry", Status: "failed"},
 		},
 	})
+	if err != nil {
+		t.Fatalf("GenerateAgentPrompt choice error: %v", err)
+	}
 	for _, want := range []string{"Eligible tasks, highest priority first. Choose exactly one highest-priority task:", "Task ID: 1", "Description: pending", "Task ID: 2", "Description: retry"} {
 		if !strings.Contains(choicePrompt, want) {
 			t.Fatalf("choice prompt missing %q:\n%s", want, choicePrompt)
@@ -87,7 +97,7 @@ func TestGenerateAgentPromptIncludesForcedTaskAndEligibleChoice(t *testing.T) {
 }
 
 func TestGenerateTaskSelectorPromptIncludesDeterministicSelectionContract(t *testing.T) {
-	prompt := GenerateTaskSelectorPrompt(PromptContract{
+	prompt, err := GenerateTaskSelectorPrompt(PromptContract{
 		ProjectName:     "sample-repo",
 		ProjectRootPath: "/work/sample-repo",
 		EligibleTasks: []PromptTask{
@@ -95,6 +105,9 @@ func TestGenerateTaskSelectorPromptIncludesDeterministicSelectionContract(t *tes
 			{ID: 8, Category: "db", Description: "blocked work", Status: "blocked"},
 		},
 	})
+	if err != nil {
+		t.Fatalf("GenerateTaskSelectorPrompt error: %v", err)
+	}
 	for _, want := range []string{
 		"Ralph task selector agent prompt contract",
 		"Ralph already queried non-complete tasks deterministically.",
@@ -118,5 +131,47 @@ func TestGenerateTaskSelectorPromptIncludesDeterministicSelectionContract(t *tes
 	}
 	if strings.Contains(prompt, "Query the goralph database") {
 		t.Fatalf("selector prompt still tells agent to query tasks:\n%s", prompt)
+	}
+}
+
+func TestPromptRendererRejectsMissingRequiredFields(t *testing.T) {
+	_, err := GenerateAgentPrompt(PromptContract{ProjectRootPath: "/work/sample-repo"})
+	if err == nil || !strings.Contains(err.Error(), "project name") {
+		t.Fatalf("empty project name error = %v", err)
+	}
+
+	_, err = GenerateAgentPrompt(PromptContract{
+		ProjectName:     "sample-repo",
+		ProjectRootPath: "/work/sample-repo",
+		AssignedTask:    &PromptTask{ID: 7, Category: "cli", Status: "pending"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "description") {
+		t.Fatalf("empty task description error = %v", err)
+	}
+
+	_, err = GenerateAgentPrompt(PromptContract{
+		ProjectName:     "sample-repo",
+		ProjectRootPath: "/work/sample-repo",
+		AssignedTask: &PromptTask{
+			ID:             7,
+			Category:       "cli",
+			Description:    "work",
+			Status:         "pending",
+			LatestProgress: []PromptProgress{{CreatedAt: "2026-06-10"}},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "summary") {
+		t.Fatalf("empty progress summary error = %v", err)
+	}
+}
+
+func TestLoadPromptRendererRequiresNamedTemplates(t *testing.T) {
+	path := t.TempDir() + "/prompt.tmpl"
+	if err := os.WriteFile(path, []byte(`{{define "agent"}}agent{{end}}`), 0o600); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+	_, err := LoadPromptRenderer(path)
+	if err == nil || !strings.Contains(err.Error(), `missing "selector" template`) {
+		t.Fatalf("missing selector error = %v", err)
 	}
 }

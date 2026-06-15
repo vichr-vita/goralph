@@ -1256,6 +1256,170 @@ func TestRunOnePromptIncludesProjectFeedbackCommands(t *testing.T) {
 	}
 }
 
+func TestRunOneUsesPromptTemplateFromConfig(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	promptPath := filepath.Join(tempDir, "prompt.txt")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	templatePath := filepath.Join(tempDir, "prompt.tmpl")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	templateSource := `{{define "selector"}}SELECTOR {{range .EligibleTasks}}{{.ID}}{{end}}{{end}}
+{{define "agent"}}CONFIG TEMPLATE {{.ProjectName}} {{with .AssignedTask}}{{.Description}}{{end}}{{end}}
+`
+	if err := os.WriteFile(templatePath, []byte(templateSource), 0o600); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\nprompt_template: "+templatePath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"templated task","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+
+	runnerScript := "#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nfor last do :; done\nprintf '%s' \"$last\" > " + strconv.Quote(promptPath) + "\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "one"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run one: %v", err)
+	}
+
+	prompt := readTestFile(t, promptPath)
+	if !strings.Contains(prompt, "CONFIG TEMPLATE sample-repo templated task") {
+		t.Fatalf("prompt = %q, want config template output", prompt)
+	}
+}
+
+func TestRunPromptTemplateFlagOverridesConfig(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	promptPath := filepath.Join(tempDir, "prompt.txt")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	configTemplatePath := filepath.Join(tempDir, "config-prompt.tmpl")
+	flagTemplatePath := filepath.Join(tempDir, "flag-prompt.tmpl")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configTemplate := `{{define "selector"}}CONFIG SELECTOR{{end}}{{define "agent"}}CONFIG TEMPLATE{{end}}`
+	flagTemplate := `{{define "selector"}}FLAG SELECTOR{{end}}{{define "agent"}}FLAG TEMPLATE {{with .AssignedTask}}{{.Description}}{{end}}{{end}}`
+	if err := os.WriteFile(configTemplatePath, []byte(configTemplate), 0o600); err != nil {
+		t.Fatalf("write config template: %v", err)
+	}
+	if err := os.WriteFile(flagTemplatePath, []byte(flagTemplate), 0o600); err != nil {
+		t.Fatalf("write flag template: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\nprompt_template: "+configTemplatePath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"override task","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	tasks := fetchImportedTasks(t, dbPath, repoRoot)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+
+	runnerScript := "#!/bin/sh\nif [ \"$GO_RALPH_AGENT_ROLE\" = selector ]; then printf '<task_id>%s</task_id>\n' \"$GO_RALPH_SELECTOR_TASK_ID\"; exit 0; fi\nfor last do :; done\nprintf '%s' \"$last\" > " + strconv.Quote(promptPath) + "\nGO_RALPH_TEST_HELPER=run_one_update GO_RALPH_TEST_DB=" + strconv.Quote(dbPath) + " GO_RALPH_TEST_TASK=" + strconv.Quote(strconv.FormatInt(tasks[0].id, 10)) + " " + strconv.Quote(os.Args[0]) + " -test.run '^TestRunOneHelper$' >/dev/null\n"
+	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o700); err != nil {
+		t.Fatalf("write fake runner: %v", err)
+	}
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--prompt-template", flagTemplatePath, "--quiet", "one"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute run one: %v", err)
+	}
+
+	prompt := readTestFile(t, promptPath)
+	if !strings.Contains(prompt, "FLAG TEMPLATE override task") || strings.Contains(prompt, "CONFIG TEMPLATE") {
+		t.Fatalf("prompt = %q, want flag template override", prompt)
+	}
+}
+
+func TestRunPromptTemplateMissingNamedTemplateFailsBeforeRun(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	isolateDatabaseEnv(t)
+
+	repoRoot, workDir := createTestGitWorkDir(t, "sample-repo")
+	chdir(t, workDir)
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "db", "ralph.db")
+	runnerPath := filepath.Join(tempDir, "fake-runner.sh")
+	templatePath := filepath.Join(tempDir, "bad-prompt.tmpl")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(templatePath, []byte(`{{define "agent"}}agent{{end}}`), 0o600); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("runner_command: "+runnerPath+"\nprompt_template: "+templatePath+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(runnerPath, []byte("#!/bin/sh\nexit 99\n"), 0o700); err != nil {
+		t.Fatalf("write runner: %v", err)
+	}
+
+	prdPath := writePRDFile(t, `[{"category":"runner","description":"bad template task","steps":["one"],"passes":false}]`)
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--db", dbPath, "prd", "import", prdPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute prd import: %v", err)
+	}
+	if tasks := fetchImportedTasks(t, dbPath, repoRoot); len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	viper.Reset()
+
+	cmd = NewRootCommand()
+	cmd.SetArgs([]string{"--config", configPath, "--db", dbPath, "run", "--quiet", "one"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), `missing "selector" template`) {
+		t.Fatalf("run error = %v, want missing selector", err)
+	}
+	assertRunCount(t, dbPath, 0)
+}
+
 func TestRunOneCreatesAndFinishesRunRecord(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)

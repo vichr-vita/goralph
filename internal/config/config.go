@@ -19,6 +19,8 @@ const (
 	configFile              = "config.yaml"
 	projectConfigDir        = ".ralph"
 	feedbackCommandsKey     = "feedback_commands"
+	promptTemplateKey       = "prompt.template"
+	promptTemplateFlatKey   = "prompt_template"
 	runnerCommandKey        = "runner.command"
 	runnerCommandFlatKey    = "runner_command"
 	runnerArgsKey           = "runner.args"
@@ -29,11 +31,12 @@ const (
 
 // Settings contains resolved configuration values.
 type Settings struct {
-	DBPath           string
-	Runner           string
-	RunnerCommand    string
-	RunnerArgs       []string
-	FeedbackCommands []string
+	DBPath             string
+	Runner             string
+	RunnerCommand      string
+	RunnerArgs         []string
+	FeedbackCommands   []string
+	PromptTemplatePath string
 }
 
 // Load reads goralph configuration from an explicit path, user config, project config, and environment.
@@ -71,13 +74,15 @@ func Load(cfgFile string, dbPath string) (*Settings, error) {
 	runnerArgs := resolveRunnerArgs(v)
 
 	feedback := feedbackCommands(v)
+	promptTemplatePath := resolvePromptTemplatePath(v)
 
 	settings := &Settings{
-		DBPath:           resolvedDBPath,
-		Runner:           runnerCommand,
-		RunnerCommand:    runnerCommand,
-		RunnerArgs:       runnerArgs,
-		FeedbackCommands: feedback,
+		DBPath:             resolvedDBPath,
+		Runner:             runnerCommand,
+		RunnerCommand:      runnerCommand,
+		RunnerArgs:         runnerArgs,
+		FeedbackCommands:   feedback,
+		PromptTemplatePath: promptTemplatePath,
 	}
 	publishResolvedSettings(settings)
 	return settings, nil
@@ -125,6 +130,16 @@ func publishResolvedSettings(settings *Settings) {
 	v.Set(runnerArgsKey, settings.RunnerArgs)
 	v.Set("runner", settings.Runner)
 	v.Set(feedbackCommandsKey, settings.FeedbackCommands)
+	v.Set(promptTemplateKey, settings.PromptTemplatePath)
+}
+
+func resolvePromptTemplatePath(v *viper.Viper) string {
+	for _, key := range []string{promptTemplateKey, promptTemplateFlatKey} {
+		if path := v.GetString(key); path != "" {
+			return path
+		}
+	}
+	return ""
 }
 
 func mergeConfigFile(v *viper.Viper, path string) error {

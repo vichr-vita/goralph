@@ -133,6 +133,10 @@ runner:
 feedback_commands:
   - gofmt -w .
   - go test ./...
+
+# Optional custom text/template prompt file.
+# It must define both named templates: "selector" and "agent".
+prompt_template: /home/alice/.config/goralph/prompt.tmpl
 ```
 
 Example project config at `.ralph/config.yaml`:
@@ -153,6 +157,10 @@ feedback:
   commands:
     - go test ./...
     - go run ./cmd/goralph --help
+
+# Alternative nested prompt template form.
+prompt:
+  template: .ralph/prompt.tmpl
 ```
 
 Equivalent flat keys are also supported:
@@ -161,6 +169,7 @@ Equivalent flat keys are also supported:
 runner_command: pi
 runner_args: [-p]
 feedback_command: go test ./...
+prompt_template: .ralph/prompt.tmpl
 ```
 
 Config precedence:
@@ -169,7 +178,7 @@ Config precedence:
 2. User config: `~/.config/goralph/config.yaml`.
 3. Nearest project config: `.ralph/config.yaml`; project values override user values.
 4. Environment variables such as `GORALPH_RUNNER_COMMAND` and `GORALPH_DB`.
-5. CLI flags; `--config <path>` replaces user/project config discovery, and `--db <path>` wins for database path.
+5. CLI flags; `--config <path>` replaces user/project config discovery, `--db <path>` wins for database path, and `goralph run --prompt-template <file>` wins for prompt templates.
 
 Database path override order is strict: `--db`, `GO_RALPH_DB`/`GORALPH_DB`, config `db`, `$XDG_DATA_HOME/goralph/ralph.db`, then `~/.local/share/goralph/ralph.db`. goralph creates the database parent directory when needed.
 
@@ -250,10 +259,13 @@ Task statuses are `pending`, `in_progress`, `passed`, `failed`, and `blocked`.
 
 Run commands accept persistent run flags:
 
+- `--prompt-template <file>` uses a custom `text/template` prompt file for both selector and implementation prompts. It overrides `prompt_template` / `prompt.template` config.
 - `--quiet` suppresses live runner output.
 - `--allow-dirty` bypasses clean-worktree checks before and after agent turns.
 - `--force` marks stale active runs failed before starting a new run.
 - `--stale-after <duration>` controls stale active-run detection. Default: `30m0s`.
+
+Custom prompt template files must define named templates `selector` and `agent`. They receive the prompt contract fields used by the default template: `ProjectName`, `ProjectRootPath`, `ForcedTask`, `AssignedTask`, `EligibleTasks`, and `FeedbackCommands`. Task values include `ID`, `Category`, `Description`, `Status`, `ProgressReport`, `Steps`, and `LatestProgress`. The helper function `add1` is available for 1-based step numbering. Custom templates fully replace the default safety wording, so keep command-safety instructions in your template if you need them.
 
 Commands:
 

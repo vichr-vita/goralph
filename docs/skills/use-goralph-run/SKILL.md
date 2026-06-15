@@ -11,6 +11,7 @@ description: Use for any project that should be implemented through `goralph run
 - Current project is resolved from nearest Git root.
 - DB rows are filtered by project/root path.
 - Do not pass `--db` in normal use unless user/project config requires it.
+- Do not pass `--prompt-template` unless user/project config requires a custom prompt.
 - Use `--db .ralph/ralph.db` only for isolated tests, demos, sandboxes, or when you must avoid touching the shared goralph DB.
 
 ## PRD JSON schema
@@ -126,7 +127,7 @@ Minimal valid PRD:
    - Stale recovery still needs `--force`.
    - Do not use very tiny values like `2m` for normal runs unless deliberately stress-testing.
 
-7. Run implementation.
+7. Run implementation. Use `--prompt-template <file>` only when project config or user request requires a custom `text/template` prompt file with both `selector` and `agent` named templates.
    ```sh
    goralph run all --max-turns 6
    ```

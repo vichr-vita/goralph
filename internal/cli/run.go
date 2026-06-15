@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vichr-vita/goralph/internal/config"
 	"github.com/vichr-vita/goralph/internal/db"
 	"github.com/vichr-vita/goralph/internal/db/sqlc"
 	gitrepo "github.com/vichr-vita/goralph/internal/git"
@@ -49,6 +50,7 @@ func newRunCommand() *cobra.Command {
 	var allowDirty bool
 	var force bool
 	var staleAfter time.Duration
+	var promptTemplatePath string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -59,8 +61,9 @@ func newRunCommand() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&allowDirty, "allow-dirty", false, "run agents without requiring a clean git worktree")
 	cmd.PersistentFlags().BoolVar(&force, "force", false, "mark stale active runs failed before starting")
 	cmd.PersistentFlags().DurationVar(&staleAfter, "stale-after", 30*time.Minute, "active run heartbeat age considered stale")
-	cmd.AddCommand(newRunOneCommand(&quiet, &allowDirty, &force, &staleAfter))
-	cmd.AddCommand(newRunAllCommand(&quiet, &allowDirty, &force, &staleAfter))
+	cmd.PersistentFlags().StringVar(&promptTemplatePath, "prompt-template", "", "prompt template file path")
+	cmd.AddCommand(newRunOneCommand(&quiet, &allowDirty, &force, &staleAfter, &promptTemplatePath))
+	cmd.AddCommand(newRunAllCommand(&quiet, &allowDirty, &force, &staleAfter, &promptTemplatePath))
 	cmd.AddCommand(newRunListCommand())
 	cmd.AddCommand(newRunShowCommand())
 	cmd.AddCommand(newRunOpenCommand())
@@ -69,7 +72,7 @@ func newRunCommand() *cobra.Command {
 	return cmd
 }
 
-func newRunOneCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *time.Duration) *cobra.Command {
+func newRunOneCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *time.Duration, promptTemplatePath *string) *cobra.Command {
 	var taskID int64
 	cmd := &cobra.Command{
 		Use:   "one",
@@ -80,6 +83,10 @@ func newRunOneCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 				return err
 			}
 			settings, err := settingsFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+			renderer, err := promptRendererForRun(settings, *promptTemplatePath)
 			if err != nil {
 				return err
 			}
@@ -101,7 +108,7 @@ func newRunOneCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 				forcedTaskID = &taskID
 			}
 
-			run, ran, _, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, forcedTaskID, false, !*allowDirty, activePolicy, events, runnerStdout, cmd.ErrOrStderr())
+			run, ran, _, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, renderer, *quiet, nil, forcedTaskID, false, !*allowDirty, activePolicy, events, runnerStdout, cmd.ErrOrStderr())
 			if !ran {
 				return writeRunMessage(cmd, string(OutcomeNoEligibleTasks), "No eligible task", 0)
 			}
@@ -118,7 +125,7 @@ func newRunOneCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 	return cmd
 }
 
-func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *time.Duration) *cobra.Command {
+func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *time.Duration, promptTemplatePath *string) *cobra.Command {
 	var continueOnBlocked bool
 	var maxTurns int
 	var unsupportedTaskID string
@@ -139,6 +146,10 @@ func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 				return err
 			}
 			settings, err := settingsFromContext(cmd.Context())
+			if err != nil {
+				return err
+			}
+			renderer, err := promptRendererForRun(settings, *promptTemplatePath)
 			if err != nil {
 				return err
 			}
@@ -176,7 +187,7 @@ func newRunAllCommand(quiet *bool, allowDirty *bool, force *bool, staleAfter *ti
 					return err
 				}
 
-				run, ran, complete, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, *quiet, nil, nil, continueOnBlocked, !*allowDirty, activePolicy, events, runnerStdout, cmd.ErrOrStderr())
+				run, ran, complete, err := executeAgentTurn(cmd.Context(), settings.DBPath, project, settings.RunnerCommand, settings.RunnerArgs, settings.FeedbackCommands, renderer, *quiet, nil, nil, continueOnBlocked, !*allowDirty, activePolicy, events, runnerStdout, cmd.ErrOrStderr())
 				if !ran {
 					if runs == 0 {
 						return writeRunMessage(cmd, string(OutcomeNoEligibleTasks), "No eligible task", runs)
@@ -224,6 +235,21 @@ type activeRunPolicy struct {
 
 var newAgentRunner = func(command string, args []string) runner.Runner {
 	return pi.New(command, args)
+}
+
+func promptRendererForRun(settings *config.Settings, overridePath string) (*loop.PromptRenderer, error) {
+	path := strings.TrimSpace(overridePath)
+	if path == "" && settings != nil {
+		path = strings.TrimSpace(settings.PromptTemplatePath)
+	}
+	if path == "" {
+		return loop.DefaultPromptRenderer(), nil
+	}
+	renderer, err := loop.LoadPromptRenderer(path)
+	if err != nil {
+		return nil, err
+	}
+	return renderer, nil
 }
 
 type activeRunExistsError struct {
@@ -441,7 +467,7 @@ func startRunHeartbeat(ctx context.Context, queries *sqlc.Queries, projectID int
 	}
 }
 
-func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, feedbackCommands []string, quiet bool, seen map[int64]struct{}, forcedTaskID *int64, pendingOnly bool, verifyCleanAfter bool, activePolicy activeRunPolicy, events *runEventWriter, stdout io.Writer, stderr io.Writer) (runOutput, bool, bool, error) {
+func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, runnerCommand string, runnerArgs []string, feedbackCommands []string, renderer *loop.PromptRenderer, quiet bool, seen map[int64]struct{}, forcedTaskID *int64, pendingOnly bool, verifyCleanAfter bool, activePolicy activeRunPolicy, events *runEventWriter, stdout io.Writer, stderr io.Writer) (runOutput, bool, bool, error) {
 	database, err := db.Open(dbPath)
 	if err != nil {
 		return runOutput{}, false, false, fmt.Errorf("open database: %w", err)
@@ -492,7 +518,7 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 			return runOutput{}, false, false, nil
 		}
 
-		selected, hasTask, err := selectTaskWithAgent(ctx, project, runnerCommand, runnerArgs, quiet, selectorTasks, pendingOnly)
+		selected, hasTask, err := selectTaskWithAgent(ctx, project, runnerCommand, runnerArgs, renderer, quiet, selectorTasks, pendingOnly)
 		if err != nil {
 			return runOutput{}, true, false, err
 		}
@@ -507,7 +533,10 @@ func executeAgentTurn(ctx context.Context, dbPath string, project sqlc.Project, 
 		beforeStatuses[selected.ID] = selected.Status
 		runTaskID = sql.NullInt64{Int64: selected.ID, Valid: true}
 	}
-	prompt := loop.GenerateAgentPrompt(promptContract)
+	prompt, err := renderer.GenerateAgentPrompt(promptContract)
+	if err != nil {
+		return runOutput{}, true, false, err
+	}
 
 	host, _ := os.Hostname()
 	if err := writeTrustedCommandSummary(stderr, runnerCommand, runnerArgs, feedbackCommands); err != nil {
@@ -702,12 +731,15 @@ func inspectRunAllStop(ctx context.Context, dbPath string, projectID int64, cont
 	return runAllStop{kind: runAllStopNone}, nil
 }
 
-func selectTaskWithAgent(ctx context.Context, project sqlc.Project, runnerCommand string, runnerArgs []string, quiet bool, nonComplete []sqlc.Task, pendingOnly bool) (sqlc.Task, bool, error) {
-	prompt := loop.GenerateTaskSelectorPrompt(loop.PromptContract{
+func selectTaskWithAgent(ctx context.Context, project sqlc.Project, runnerCommand string, runnerArgs []string, renderer *loop.PromptRenderer, quiet bool, nonComplete []sqlc.Task, pendingOnly bool) (sqlc.Task, bool, error) {
+	prompt, err := renderer.GenerateTaskSelectorPrompt(loop.PromptContract{
 		ProjectName:     project.Name,
 		ProjectRootPath: project.RootPath,
 		EligibleTasks:   promptTasksFromRows(nonComplete),
 	})
+	if err != nil {
+		return sqlc.Task{}, false, err
+	}
 	env := []string{"GO_RALPH_AGENT_ROLE=selector"}
 	if taskID, ok := firstSelectableTaskID(nonComplete, pendingOnly); ok {
 		env = append(env, fmt.Sprintf("GO_RALPH_SELECTOR_TASK_ID=%d", taskID))
